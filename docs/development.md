@@ -18,6 +18,7 @@ These commands were checked in this workspace:
 
 ```bash
 python StochasticPBBP/Runs.py --iterations 1 --print-every 1
+python StochasticPBBP/Runs.py --iterations 1 --horizon 113 --batch-size 5 --print-every 1
 python StochasticPBBP/tests/simulator_test.py
 ```
 
@@ -42,7 +43,7 @@ If you want to turn this into a cleaner package, the next engineering steps are:
 
 1. add packaging metadata and a real dependency manifest
 2. promote the smoke tests into an automated test runner
-3. wire the `Runs.py` CLI to actually consume `--domain` and `--instance`
+3. add focused tests for chunked horizon training and state carry-over
 4. add a stable top-level package API with `__init__.py` exports
 5. separate research experiments from public examples
 

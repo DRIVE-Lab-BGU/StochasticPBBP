@@ -51,17 +51,34 @@ Verified locally in this workspace with:
 Run the built-in training example:
 
 ```bash
-python StochasticPBBP/Runs.py --iterations 20 --print-every 5
+python StochasticPBBP/Runs.py --iterations 5 --print-every 1
 ```
 
-This command is currently wired to the default reservoir domain:
+Chunked horizon training example:
+
+```bash
+python StochasticPBBP/Runs.py --iterations 1 --horizon 113 --batch-size 5 --print-every 1
+```
+
+If you do not pass explicit paths, `Runs.py` uses the default reservoir domain:
 
 - `StochasticPBBP/problems/reservoir/domain.rddl`
 - `StochasticPBBP/problems/reservoir/instance_1.rddl`
 
-The CLI parser in `Runs.py` already defines `--domain` and `--instance`, but
-`main()` still hardcodes the reservoir files. If you want another domain today,
-instantiate the classes directly from Python.
+The CLI now accepts:
+
+- `--domain`
+- `--instance`
+- `--horizon`
+- `--batch-size`
+
+When `batch_size > 1`, the trainer splits the horizon into nearly equal chunks,
+updates the policy after each chunk, and continues from the previous chunk's
+final `subs` / `model_params` / `policy_state`.
+
+Example:
+
+- `horizon=113`, `batch_size=5` -> chunk sizes `[23, 23, 23, 22, 22]`
 
 ## Python Example
 

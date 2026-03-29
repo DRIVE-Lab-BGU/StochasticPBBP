@@ -104,6 +104,27 @@ Use the rollout wrapper when:
 The rollout wrapper delegates single-step dynamics to `TorchRolloutCell`, which
 internally uses the same compiler transition function as the simulator.
 
+## Chunked Training
+
+`Train` now performs chunked optimization over the rollout horizon.
+
+If `batch_size > 1`:
+
+- the horizon is split into nearly equal chunks
+- the policy is updated after each chunk
+- the next chunk starts from the previous chunk's `final_subs`
+- `model_params` and `policy_state` are carried over as well
+
+This is implemented by:
+
+- running `TorchRollout.forward(..., initial_subs=..., steps=..., start_step=...)`
+- taking `trace.final_subs`
+- feeding that state back as the next chunk's `initial_subs`
+
+Example:
+
+- `horizon=113`, `batch_size=5` -> `[23, 23, 23, 22, 22]`
+
 ## Action Handling
 
 There is one important API difference between the two execution layers:

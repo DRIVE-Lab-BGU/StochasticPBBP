@@ -139,7 +139,7 @@ Key methods:
 - `reset(initial_state=None, initial_subs=None, model_params=None)`
 - `step(subs, actions=None, model_params=None)`
 - `forward(policy, initial_state=None, initial_subs=None, model_params=None,
-  policy_state=None)`
+  policy_state=None, steps=None, start_step=0)`
 
 Policy signatures supported by `forward()`:
 
@@ -155,6 +155,10 @@ The policy may return either:
 Important constraint:
 
 - rollout actions must use lifted action fluent names, not grounded names
+- if `initial_subs` is provided, the rollout starts from that hidden state
+- `steps` lets you run only part of the horizon
+- `start_step` lets the policy see global step numbers even when the horizon is
+  split into chunks
 
 ## `RolloutTrace`
 
@@ -201,16 +205,61 @@ Use this when you want differentiable relaxations:
 
 ## Policies And Training
 
-Two policy-related entry points appear in the repository:
+The training code is now split across three files:
 
-- `StochasticPBBP/core/Policies.py`: simple random / neural policy helpers
-- `StochasticPBBP/Runs.py`: a runnable `GaussianPolicy` and `Train` example
+- `StochasticPBBP/core/Policies.py`: simple random / neural helpers plus
+  `GaussianPolicy`
+- `StochasticPBBP/core/Train.py`: chunked horizon training loop
+- `StochasticPBBP/Runs.py`: runnable CLI entrypoint
 
-The most complete training example today is the one in `Runs.py`:
+### `GaussianPolicy`
 
-- `GaussianPolicy`: state-independent diagonal Gaussian over the action vector
-- `Train`: wraps a `TorchRollout` and optimizes policy parameters with
-  `torch.optim.RMSprop`
+`GaussianPolicy` is a state-independent diagonal Gaussian over the lifted action
+vector. It now lives in `core/Policies.py`.
 
-That script is the best reference if you want to add your own differentiable
-policy.
+### `Train`
+
+`Train` wraps a `TorchRollout` and optimizes policy parameters with
+`torch.optim.RMSprop`.
+
+Important behavior when `batch_size > 1`:
+
+- the horizon is split into `batch_size` nearly equal chunks
+- extra steps from the remainder are distributed to the earliest chunks
+- the optimizer updates after each chunk
+- the next chunk starts from the previous chunk's `final_subs`
+- `model_params` and `policy_state` are also carried forward
+
+Example:
+
+- `horizon=113`, `batch_size=5` -> chunk sizes `[23, 23, 23, 22, 22]`
+
+Typical usage:
+
+```python
+from pathlib import Path
+
+import pyRDDLGym
+
+from StochasticPBBP.core.Policies import GaussianPolicy
+from StochasticPBBP.core.Simulator import TorchRDDLSimulator
+from StochasticPBBP.core.Train import Train
+
+root = Path("StochasticPBBP/problems/reservoir")
+env = pyRDDLGym.make(
+    domain=root / "domain.rddl",
+    instance=root / "instance_1.rddl",
+    vectorized=True,
+)
+
+simulator = TorchRDDLSimulator(env.model)
+policy = GaussianPolicy(action_template=simulator.noop_actions)
+trainer = Train(
+    model=env.model,
+    policy=policy,
+    horizon=113,
+    batch_size=5,
+)
+
+history = trainer.train_trajectory(iterations=1, print_every=1)
+```

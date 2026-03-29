@@ -57,17 +57,33 @@ Training example:
 python StochasticPBBP/Runs.py --iterations 5 --print-every 1
 ```
 
+Chunked horizon training example:
+
+```bash
+python StochasticPBBP/Runs.py --iterations 1 --horizon 113 --batch-size 5 --print-every 1
+```
+
 What this does:
 
-- loads the default reservoir domain
-- builds a `TorchRollout` with `FuzzyLogic()`
-- initializes a state-independent Gaussian policy
-- performs gradient ascent on cumulative return
+- loads the default reservoir domain unless you pass `--domain` and `--instance`
+- initializes `GaussianPolicy` from `core/Policies.py`
+- trains through `Train` from `core/Train.py`
+- if `batch_size > 1`, splits the horizon into nearly equal chunks
+- updates parameters after each chunk
+- resumes the next chunk from the previous chunk's final simulator state
 
-Important limitation:
+Chunking example:
 
-- `Runs.py` parses `--domain` and `--instance`, but `main()` currently ignores
-  those arguments and hardcodes the reservoir example paths
+- `horizon=113`, `batch_size=5` -> `[23, 23, 23, 22, 22]`
+
+Useful CLI arguments:
+
+- `--domain`
+- `--instance`
+- `--horizon`
+- `--batch-size`
+- `--iterations`
+- `--print-every`
 
 Simulator smoke test:
 
@@ -120,3 +136,5 @@ print(float(reward), done)
   horizon.
 - Use `TorchRDDLCompiler` when you need direct access to compiled CPFs and the
   transition function.
+- Use `Train` when you want chunked training with optimizer updates between
+  horizon segments.
