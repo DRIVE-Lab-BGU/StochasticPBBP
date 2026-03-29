@@ -3,6 +3,7 @@ class noise():
         self.action_dim = action_dim
         self.max_action = max_action
         self.horizon = horizon
+        
     def get_smaller_1(self , start_noise , end_noise , step   ):
         noise = step * (end_noise - start_noise) / self.horizon + start_noise
         return noise
