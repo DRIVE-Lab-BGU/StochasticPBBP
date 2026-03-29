@@ -123,7 +123,7 @@ class TorchRolloutCell(nn.Module):
 
         observation = self.observe(subs)
         return subs, observation, local_model_params
-
+    
     def observe(self, subs: Dict[str, Any]) -> TensorDict:
         """Project the full hidden state to the observation exposed to the policy."""
         return {

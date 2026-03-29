@@ -77,6 +77,7 @@ class random_policy:
         return torch.full_like(reference, int(fill_value))
 
 
+
 class GaussianPolicy(nn.Module):
     """State-independent diagonal Gaussian policy over the action vector."""
 
@@ -145,6 +146,6 @@ class GaussianPolicy(nn.Module):
                 policy_state: Any=None) -> TensorDict:
         del observation, step, policy_state
         dist = self.distribution()
-        flat_action = dist.rsample()
+        flat_action =  dist.rsample()
         return self._pack_actions(flat_action)
 
