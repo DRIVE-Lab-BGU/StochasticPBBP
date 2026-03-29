@@ -109,6 +109,25 @@ class state2action(nn.Module):
         return specs
 
     def _flatten_observation(self, observation: TensorDict) -> torch.Tensor:
+        """
+        Flattens the observation dict into a single tensor by concatenating the tensors in the order of self.observation_specs.
+        e.g. if self.observation_specs is
+        [
+            {'name': 'obs1', 'shape': (2,), 'numel': 2, 'dtype': torch.float32, 'device': device('cuda')},
+            {'name': 'obs2', 'shape': (3,), 'numel': 3, 'dtype': torch.float32, 'device': device('cuda')},
+        ]
+        and the observation is
+        {
+            'obs1': torch.tensor([1.0, 2.0], device='cuda'),
+            'obs2': torch.tensor([3.0, 4.0, 5.0], device='cuda'),
+        }
+        then it will return
+        torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device='cuda')
+        e.g. 
+        if we have 3 observation specs and the observation like (temperature, rlevel , sunlight)
+        we will flatten them into a single tensor by concatenating them in the order of the observation specs. 
+        
+        """
         flat_parts: List[torch.Tensor] = []
         for spec in self.observation_specs:
             name = spec['name']
