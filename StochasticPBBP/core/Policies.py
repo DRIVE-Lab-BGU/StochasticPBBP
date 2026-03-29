@@ -148,23 +148,3 @@ class GaussianPolicy(nn.Module):
         flat_action = dist.rsample()
         return self._pack_actions(flat_action)
 
-
-def main():
-    root = Path(__file__).resolve().parents[1]
-
-    domain = root / "problems" / "reservoir" / "domain.rddl"
-    instance = root / "problems" / "reservoir" / "instance_1.rddl"
-    env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
-    model = env.model
-
-    policy = random_policy(model, logic=None)
-
-    action_template = policy.get_action_template()
-    print(f"action template is {action_template}")
-
-    action = policy.get_action()
-    print(f"constant action is {action}")
-
-
-if __name__ == "__main__":
-    main()
