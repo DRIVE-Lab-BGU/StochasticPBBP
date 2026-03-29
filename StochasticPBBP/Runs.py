@@ -52,7 +52,16 @@ class state2action(nn.Module):
     def _build_observation_specs(cls, observation_template: TensorDict) -> List[Dict[str, Any]]:
         """
         Builds a list of observation specs from the observation template.
-        its get subs and retutn observation specs for the observation template
+        its get subs and return observation specs for the observation template
+        e.g.
+        observation_template = {
+            'obs1': torch.zeros(2, device='cuda'),
+            'obs2': torch.zeros(3, device='cuda'),
+        }
+        will return
+        [
+            {'name': 'obs1', 'shape': (2,), 'numel': 2, 'dtype': torch.float32, 'device': device('cuda')},
+            {'name': 'obs2', 'shape': (3,), 'numel': 3, 'dtype': torch.float32, 'device': device('cuda')},
         """
         specs: List[Dict[str, Any]] = []
         for (name, template) in observation_template.items():
@@ -67,6 +76,21 @@ class state2action(nn.Module):
 
     @classmethod
     def _build_action_specs(cls, action_template: TensorDict) -> List[Dict[str, Any]]:
+        """
+        
+        Builds a list of action specs from the action template.
+        its get subs and return action specs for the action template
+        e.g.
+        action_template = {
+            'action1': torch.zeros(2, device='cuda'),
+            'action2': torch.zeros(3, device='cuda'),
+        }
+        will return
+        [
+            {'name': 'action1', 'shape': (2,), 'numel': 2, 'dtype': torch.float32, 'device': device('cuda')},
+            {'name': 'action2', 'shape': (3,), 'numel': 3, 'dtype': torch.float32, 'device': device('cuda')},
+        ]
+        """
         specs: List[Dict[str, Any]] = []
         for (name, template) in action_template.items():
             tensor = cls._as_tensor(template)
