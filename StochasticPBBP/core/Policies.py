@@ -1,36 +1,34 @@
-import torch
-import pyRDDLGym
+from __future__ import annotations
+
+import math
 from pathlib import Path
-from core.Simulator import TorchRDDLSimulator
+from typing import Any, Dict, List, Optional
 
-class neural_policy():
+import pyRDDLGym
+import torch
+from torch import nn
 
-    def __init__(self, model, logic, noise=None):
-        self.model = model
-        self.logic = logic
-        self.noise = noise
+from .Simulator import TorchRDDLSimulator
 
-    def neural_policy(self, network, obs, num_step):
-        neural = network
-        action = neural(obs)
-        return action
+TensorDict = Dict[str, torch.Tensor]
 
 
-class slp_policy():
+def _as_tensor(value: Any,
+               *,
+               dtype: Optional[torch.dtype]=None,
+               device: Optional[torch.device]=None) -> torch.Tensor:
+    tensor = value if isinstance(value, torch.Tensor) else torch.as_tensor(value)
+    if dtype is not None or device is not None:
+        tensor = tensor.to(dtype=dtype or tensor.dtype, device=device or tensor.device)
+    return tensor
 
-    def __init__(self, model, logic, noise=None):
-        self.model = model
-        self.logic = logic
-        self.noise = noise
+class MPCPolicy:
+    pass
 
-    def get_action(self, network, obs, num_step):
-        neural = network
-        action = neural(obs)
-        return action
+class SLPPolicy:
+    pass
 
-
-class random_policy():
-
+class random_policy:
     def __init__(self, model, logic, noise=None):
         self.model = model
         self.logic = logic
@@ -46,6 +44,7 @@ class random_policy():
         return TorchRDDLSimulator._clone_structure(self.simulator.noop_actions)
 
     def get_action(self, obs=None, num_step=None, fill_value=None):
+        del obs, num_step
         action = self.get_action_template()
         for (name, value) in action.items():
             action[name] = self._fill_action_value(value, fill_value)
@@ -72,29 +71,99 @@ class random_policy():
             return torch.full_like(reference, float(fill_value))
 
         if fill_value is None:
-            return torch.randint(0, 10, reference.shape, device=reference.device).to(dtype=reference.dtype)
+            return torch.randint(0, 10, reference.shape, device=reference.device).to(
+                dtype=reference.dtype
+            )
         return torch.full_like(reference, int(fill_value))
+
+
+class GaussianPolicy(nn.Module):
+    """State-independent diagonal Gaussian policy over the action vector."""
+
+    def __init__(self,
+                 action_template: TensorDict,
+                 init_std: float=1.0,
+                 min_log_std: float=-5.0,
+                 max_log_std: float=2.0) -> None:
+        super().__init__()
+        if not action_template:
+            raise ValueError('action_template must contain at least one tensor.')
+
+        first_action = next(iter(action_template.values()))
+        self.device = first_action.device
+        self.dtype = first_action.dtype if first_action.dtype.is_floating_point else torch.float32
+        self.action_specs = self._build_action_specs(action_template)
+        self.min_log_std = min_log_std
+        self.max_log_std = max_log_std
+
+        output_dim = sum(spec['numel'] for spec in self.action_specs)
+        init_log_std = float(math.log(max(init_std, 1e-6)))
+        self.mu = nn.Parameter(
+            torch.zeros(output_dim, device=self.device, dtype=self.dtype)
+        )
+        self.log_std = nn.Parameter(
+            torch.full((output_dim,), init_log_std, device=self.device, dtype=self.dtype)
+        )
+
+    @staticmethod
+    def _build_action_specs(action_template: TensorDict) -> List[Dict[str, Any]]:
+        specs: List[Dict[str, Any]] = []
+        for (name, template) in action_template.items():
+            template_tensor = _as_tensor(template)
+            if not template_tensor.dtype.is_floating_point:
+                raise ValueError(
+                    f'GaussianPolicy supports only real-valued action tensors, got {name} '
+                    f'with dtype {template_tensor.dtype}.'
+                )
+            specs.append({
+                'name': name,
+                'shape': tuple(template_tensor.shape),
+                'numel': int(template_tensor.numel()),
+                'dtype': template_tensor.dtype,
+                'device': template_tensor.device,
+            })
+        return specs
+
+    def distribution(self) -> torch.distributions.Normal:
+        log_std = self.log_std.clamp(self.min_log_std, self.max_log_std)
+        std = torch.exp(log_std).to(dtype=self.mu.dtype, device=self.mu.device)
+        return torch.distributions.Normal(self.mu, std)
+
+    def _pack_actions(self, flat_action: torch.Tensor) -> TensorDict:
+        actions: TensorDict = {}
+        start = 0
+        for spec in self.action_specs:
+            end = start + spec['numel']
+            raw_action = flat_action[start:end].reshape(spec['shape'])
+            actions[spec['name']] = raw_action.to(dtype=spec['dtype'], device=spec['device'])
+            start = end
+        return actions
+
+    def forward(self,
+                observation: TensorDict,
+                step: Optional[int]=None,
+                policy_state: Any=None) -> TensorDict:
+        del observation, step, policy_state
+        dist = self.distribution()
+        flat_action = dist.rsample()
+        return self._pack_actions(flat_action)
 
 
 def main():
     root = Path(__file__).resolve().parents[1]
 
-    domain = root / "instances" / "reservoir" / "domain.rddl"
-    instance = root / "instances" / "reservoir" / "instance_1.rddl"
+    domain = root / "problems" / "reservoir" / "domain.rddl"
+    instance = root / "problems" / "reservoir" / "instance_1.rddl"
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
     model = env.model
-
-
 
     policy = random_policy(model, logic=None)
 
     action_template = policy.get_action_template()
     print(f"action template is {action_template}")
 
-    action = policy.get_action() # if empty, it will be filled with random values
+    action = policy.get_action()
     print(f"constant action is {action}")
-
-
 
 
 if __name__ == "__main__":
