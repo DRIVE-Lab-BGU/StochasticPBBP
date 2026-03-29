@@ -1,1 +1,1 @@
-# StochasticPlanningByBackprop
+# StochasticPBBP
