@@ -288,7 +288,10 @@ class TorchRollout(nn.Module):
                 initial_state: Optional[Dict[str, Any]]=None,
                 initial_subs: Optional[Dict[str, Any]]=None,
                 model_params: Optional[Dict[str, Any]]=None,
-                policy_state: Any=None) -> RolloutTrace:
+                policy_state: Any=None,
+                steps: Optional[int]=None,
+                start_step: int=0) -> RolloutTrace:
+        # in the rest in the cell is check if exist a subs and if not it will create a new one using the reset function, so we can start with subs = None and let the cell handle it.
         subs, observation, local_model_params = self.reset(
             initial_state=initial_state,
             initial_subs=initial_subs,
@@ -300,7 +303,12 @@ class TorchRollout(nn.Module):
         rewards: List[torch.Tensor] = []
         terminals: List[bool] = []
 
-        for step in range(self.horizon):
+        rollout_steps = self.horizon if steps is None else steps
+        if rollout_steps < 0:
+            raise ValueError(f'steps must be non-negative, got {rollout_steps}.')
+
+        for local_step in range(rollout_steps):
+            step = start_step + local_step
             observations.append(observation)
             raw_action, policy_state = self._call_policy(
                 policy, observation, step, policy_state
