@@ -8,7 +8,7 @@ like a polished library release.
 Current state:
 
 - no `pyproject.toml` or `setup.py`
-- no pinned runtime dependency file
+- a lightweight `requirements.txt` exists for runtime setup
 - test files are a mix of smoke tests and exploratory scripts
 - public examples are concentrated in `Runs.py` and `tests/simulator_test.py`
 

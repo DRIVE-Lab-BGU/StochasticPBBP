@@ -29,11 +29,10 @@ infrastructure for:
 
 ## Quick Start
 
-The dependency file in the repository is currently empty, so install the core
-runtime packages explicitly:
+Install the core runtime dependencies:
 
 ```bash
-python -m pip install torch pyRDDLGym
+python -m pip install -r requirements.txt
 ```
 
 Optional comparison / experimentation dependencies:
@@ -117,7 +116,7 @@ mkdocs serve
 The core ideas are implemented and usable, but the project is still rough
 around the edges:
 
-- there is no pinned runtime dependency file yet
+- there is a lightweight `requirements.txt`, but no full packaging metadata yet
 - there is no packaging metadata (`pyproject.toml` / `setup.py`) yet
 - some files under `StochasticPBBP/tests/` are exploratory scripts rather than a
   polished automated test suite

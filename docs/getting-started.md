@@ -2,9 +2,8 @@
 
 ## Prerequisites
 
-This repository does not yet pin runtime dependencies in a project-level
-`requirements.txt` or `pyproject.toml`, so install the main dependencies
-manually.
+This repository includes a lightweight runtime `requirements.txt`, but it still
+does not have full packaging metadata such as `pyproject.toml`.
 
 Validated in this workspace with:
 
@@ -18,7 +17,7 @@ Validated in this workspace with:
 Core runtime:
 
 ```bash
-python -m pip install torch pyRDDLGym
+python -m pip install -r requirements.txt
 ```
 
 Optional JAX stack for comparison scripts:
