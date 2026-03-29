@@ -165,6 +165,7 @@ class Train:
                     'return': float(result['objective'].detach()),
                     'loss': float(result['loss'].detach()),
                     'steps': float(len(trace.rewards)),
+                    'final_subs': current_subs,
                 }
                 history.append(metrics)
 
@@ -187,7 +188,7 @@ class Train:
             print(f'self.policy.mu: {dist.mean.detach()}')
             print(f'self.policy.std: {dist.stddev.detach()}')
 
-        return history
+        return history, self.policy
 
     def train_batch(self,
                     batch_size: int,
