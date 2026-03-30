@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import sys
 from pathlib import Path
@@ -40,7 +42,7 @@ class state2action(nn.Module):
         input_dim = sum(spec['numel'] for spec in self.observation_specs)
         for hidden_size in hidden_sizes:
             layers.append(nn.Linear(input_dim, hidden_size))
-            layers.append(nn.ReLU())
+            layers.append(nn.Tanh())
             input_dim = hidden_size
         output_dim = sum(spec['numel'] for spec in self.action_specs)
         layers.append(nn.Linear(input_dim, output_dim))
@@ -261,13 +263,97 @@ def main() -> None:
             'var_training_returns': var_training_returns.tolist(),
         }
 
-    results_no_noise = run_experiment(noise_value=0.0, label='without exploration noise')
-    results_with_noise = run_experiment(noise_value=3.0, label='with exploration noise = 3.0')
+    def run_jaxplan_experiment(label: str):
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                import jax.random as jax_random
+                from pyRDDLGym_jax.core.planner import JaxBackpropPlanner, JaxDeepReactivePolicy
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                'JaxPlan comparison requires jax and pyRDDLGym_jax to be installed.'
+            ) from exc
+
+        all_training_returns: List[List[float]] = []
+        iteration_axis: List[int] = []
+
+        for seed in seeds:
+            planner = JaxBackpropPlanner(
+                rddl=env.model,
+                plan=JaxDeepReactivePolicy(topology=list(hidden_sizes)),
+                batch_size_train=1,
+                batch_size_test=1,
+                rollout_horizon=horizon,
+                optimizer_kwargs={'learning_rate': 0.01},
+                pgpe=None,
+                print_warnings=False,
+            )
+
+            seed_returns: List[float] = []
+            seed_iterations: List[int] = []
+            for callback in planner.optimize_generator(
+                key=jax_random.PRNGKey(seed),
+                epochs=iterations,
+                train_seconds=1.0e9,
+                print_summary=False,
+                print_progress=False,
+            ):
+                seed_iterations.append(int(callback['iteration']) + 1)
+                seed_returns.append(float(callback['train_return']))
+
+            if len(seed_iterations) != iterations:
+                raise ValueError(
+                    f'Expected exactly {iterations} JaxPlan history points for seed {seed}, '
+                    f'got {len(seed_iterations)}.'
+                )
+            if not iteration_axis:
+                iteration_axis = seed_iterations
+            elif iteration_axis != seed_iterations:
+                raise ValueError('JaxPlan iterations are inconsistent across seeds.')
+
+            all_training_returns.append(seed_returns)
+            print(
+                f"{label}: seed={seed:2d} "
+                f"start_return={seed_returns[0]:10.4f} "
+                f"final_return={seed_returns[-1]:10.4f}"
+            )
+
+        returns_tensor = torch.tensor(all_training_returns, dtype=torch.float32)
+        mean_training_returns = returns_tensor.mean(dim=0)
+        std_training_returns = returns_tensor.std(dim=0, unbiased=False)
+        var_training_returns = returns_tensor.var(dim=0, unbiased=False)
+
+        print(f"\n=== {label} ===")
+        print(
+            f"final mean train return={mean_training_returns[-1].item():.4f} "
+            f"std={std_training_returns[-1].item():.4f} "
+            f"over {len(seeds)} seeds"
+        )
+
+        return {
+            'label': label,
+            'iterations': iteration_axis,
+            'all_training_returns': all_training_returns,
+            'mean_training_returns': mean_training_returns.tolist(),
+            'std_training_returns': std_training_returns.tolist(),
+            'var_training_returns': var_training_returns.tolist(),
+        }
+
+    results_no_noise = run_experiment(
+        noise_value=0.0,
+        label='torch without exploration noise',
+    )
+    results_with_noise = run_experiment(
+        noise_value=3.0,
+        label='torch with exploration noise = 3.0',
+    )
+    results_jax = run_jaxplan_experiment(
+        label='jax deep reactive policy (12, 12) without exploration noise',
+    )
 
     plt.switch_backend("Agg")
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, axes = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
 
-    def plot_mean_with_std_band(results: Dict[str, Any], color: str) -> None:
+    def plot_mean_with_std_band(ax, results: Dict[str, Any], color: str) -> None:
         mean_values = results['mean_training_returns']
         std_values = results['std_training_returns']
         lower = [mean - std for (mean, std) in zip(mean_values, std_values)]
@@ -288,16 +374,25 @@ def main() -> None:
             alpha=0.18,
         )
 
-    plot_mean_with_std_band(results_no_noise, color='tab:blue')
-    plot_mean_with_std_band(results_with_noise, color='tab:orange')
-
-    ax.set_xlabel('Training iteration')
-    ax.set_ylabel('Training return')
-    ax.set_title(
-        f'Reservoir instance_3 training curve: mean +/- std over {len(seeds)} seeds'
+    plot_mean_with_std_band(axes[0], results_no_noise, color='tab:blue')
+    plot_mean_with_std_band(axes[0], results_with_noise, color='tab:orange')
+    axes[0].set_ylabel('Training return')
+    axes[0].set_title(
+        f'Torch training curves: mean +/- std over {len(seeds)} seeds'
     )
-    ax.grid(True)
-    ax.legend()
+    axes[0].grid(True)
+    axes[0].legend()
+
+    plot_mean_with_std_band(axes[1], results_no_noise, color='tab:blue')
+    plot_mean_with_std_band(axes[1], results_jax, color='tab:green')
+    plot_mean_with_std_band(axes[1], results_with_noise, color='tab:orange')
+    axes[1].set_xlabel('Training iteration')
+    axes[1].set_ylabel('Training return')
+    axes[1].set_title(
+        f'Torch no-noise vs Jax DRP (12, 12) no-noise: mean +/- std over {len(seeds)} seeds'
+    )
+    axes[1].grid(True)
+    axes[1].legend()
 
     fig.tight_layout()
     output_path = PACKAGE_ROOT / "results_plot.png"
