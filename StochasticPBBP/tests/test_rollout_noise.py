@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+
+import pyRDDLGym
+import torch
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+if str(PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_ROOT))
+
+from core.Logic import ExactLogic  # noqa: E402
+from core.Rollout import TorchRollout, TorchRolloutCell  # noqa: E402
+from core.Noise import noise  # noqa: E402
+from core.Simulator import TorchRDDLSimulator  # noqa: E402
+DOMAIN = PACKAGE_ROOT / "problems" / "reservoir" / "domain.rddl"
+INSTANCE = PACKAGE_ROOT / "problems" / "reservoir" / "instance_1.rddl"
+
+
+class RolloutNoiseTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        env = pyRDDLGym.make(domain=DOMAIN, instance=INSTANCE, vectorized=True)
+        cls.model = env.model
+
+    @staticmethod
+    def _clone_actions(actions):
+        cloned = {}
+        for (name, value) in actions.items():
+            cloned[name] = value.clone() if isinstance(value, torch.Tensor) else value
+        return cloned
+
+    def _install_capture_step_fn(self, rollout: TorchRollout):
+        captured_actions = []
+
+        def fake_step_fn(key, actions, subs, model_params):
+            del key
+            captured_actions.append(self._clone_actions(actions))
+            return subs, {'reward': torch.tensor(0.0), 'termination': False}, model_params
+
+        rollout.cell.step_fn = fake_step_fn
+        return captured_actions
+
+    def test_constant_noise_is_applied_without_mutating_input(self) -> None:
+        rollout = TorchRollout(self.model, horizon=5, logic=ExactLogic())
+        captured_actions = self._install_capture_step_fn(rollout)
+
+        subs, _, model_params = rollout.reset()
+        original_action = {'release': torch.zeros_like(rollout.noop_actions['release'])}
+        original_snapshot = original_action['release'].clone()
+        noise_std = 0.25
+
+        torch.manual_seed(1234)
+        expected_noise = torch.distributions.Normal(
+            loc=torch.zeros_like(original_snapshot),
+            scale=torch.full_like(original_snapshot, noise_std),
+        ).rsample()
+
+        torch.manual_seed(1234)
+        rollout.step(
+            subs=subs,
+            actions=original_action,
+            model_params=model_params,
+            noise_type_dict={'type': 'constant', 'value': noise_std},
+        )
+
+        self.assertEqual(len(captured_actions), 1)
+        self.assertTrue(
+            torch.allclose(
+                captured_actions[0]['release'],
+                original_snapshot + expected_noise,
+            )
+        )
+        self.assertTrue(torch.allclose(original_action['release'], original_snapshot))
+        self.assertFalse(
+            torch.allclose(
+                captured_actions[0]['release'],
+                torch.full_like(original_snapshot, captured_actions[0]['release'][0].item()),
+            )
+        )
+
+    def test_forward_uses_step_index_for_get_smaller_1_noise(self) -> None:
+        rollout = TorchRollout(self.model, horizon=3, logic=ExactLogic())
+        captured_actions = self._install_capture_step_fn(rollout)
+
+        def zero_policy(observation, step):
+            del observation, step
+            return {'release': torch.zeros_like(rollout.noop_actions['release'])}
+
+        expected_stds = [1.0, 2.0 / 3.0, 1.0 / 3.0]
+        base = torch.zeros_like(rollout.noop_actions['release'])
+        torch.manual_seed(4321)
+        expected_actions = []
+        for std in expected_stds:
+            expected_actions.append(
+                base + torch.distributions.Normal(
+                    loc=torch.zeros_like(base),
+                    scale=torch.full_like(base, std),
+                ).rsample()
+            )
+
+        torch.manual_seed(4321)
+        trace = rollout(
+            policy=zero_policy,
+            steps=3,
+            noise_type_dict={
+                'type': 'get_smaller_1',
+                'start_value': 1.0,
+                'end_value': 0.0,
+            },
+        )
+
+        self.assertEqual(len(captured_actions), 3)
+        self.assertEqual(len(trace.actions), 3)
+        for index, expected in enumerate(expected_actions):
+            self.assertTrue(torch.allclose(captured_actions[index]['release'], expected))
+            self.assertTrue(torch.allclose(trace.actions[index]['release'], expected))
+
+    def test_noise_keeps_gradient_through_actions(self) -> None:
+        value = torch.zeros(3, dtype=torch.float64, requires_grad=True)
+
+        torch.manual_seed(99)
+        noised_value = TorchRolloutCell._add_noise_to_value(value, 0.5)
+        loss = noised_value.sum()
+        loss.backward()
+
+        self.assertIsNotNone(value.grad)
+        self.assertTrue(torch.allclose(value.grad, torch.ones_like(value)))
+
+if __name__ == '__main__':
+    unittest.main()

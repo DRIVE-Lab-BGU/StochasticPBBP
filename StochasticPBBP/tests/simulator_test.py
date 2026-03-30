@@ -2,6 +2,9 @@
 from pathlib import Path
 import sys
 import copy
+
+from torch import tensor
+import torch
 #from __future__ import annotations
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 print(f"PACKAGE_ROOT={PACKAGE_ROOT}")
@@ -36,8 +39,10 @@ def torch_single_step(model, num_steps) -> None:
     i = 0
     for _ in range(num_steps):
         i += 1
+
         rnd_policy = random_policy(model, logic=None)
-        action = rnd_policy.get_action()
+        action = {'release': tensor([-1, -1], dtype=torch.float64)}
+        print(action)
         obs, reward, done = sim.step(action, i)
         print(f"the step number{i} observation is {obs}")
         print(f"reward={float(reward)} done={done}")

@@ -51,7 +51,7 @@ class TorchRDDLCompiler:
     ERROR_CODES = {'NORMAL': 0}
 
     def __init__(self, rddl: RDDLLiftedModel,
-                 sd: float = 0.0,
+   
                  logger: Optional[Logger]=None,
                  python_functions: Optional[Dict[str, Callable]]=None,
                  use64bit: bool=False,
@@ -79,7 +79,7 @@ class TorchRDDLCompiler:
 
         self.logger = logger
         self.python_functions = python_functions or {}
-        self.sd = sd
+
         backend = logic or fuzzy_logic
         if backend is None:
             backend = ExactLogic(use64bit=use64bit)
@@ -212,8 +212,7 @@ class TorchRDDLCompiler:
             ########## main idea of the step function ###########
             #####################################################
 
-            # actions = actions + torch.normal(0, self.sd)  # optional exploration noise
-            
+
             # subs is the current state and action values, which we update in-place as we compute CPFs and reward. 
             # The final subs returned at the end of the step will have the next state values.
             subs.update(actions)

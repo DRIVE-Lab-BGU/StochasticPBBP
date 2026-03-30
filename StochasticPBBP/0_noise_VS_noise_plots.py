@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -7,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 import pyRDDLGym
+import matplotlib.pyplot as plt
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 print(f"PACKAGE_ROOT={PACKAGE_ROOT}")
@@ -14,7 +16,7 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from core.Policies import TensorDict
-from core.Rollout import TorchRollout ,TorchRolloutCell
+from core.Rollout import TorchRollout
 from core.Train import Train
 from core.Logic import FuzzyLogic
 
@@ -170,50 +172,137 @@ def main() -> None:
     print(f"INSTANCE={instance}")
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
-    horizon = 113
+    horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "100"))
     hidden_sizes = (12, 12)
+    iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "300"))
+    num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "10"))
+    seed_offset = int(os.environ.get("NOISE_PLOT_SEED_OFFSET", "0"))
+    batch_size = 1
+    seeds = [seed_offset + index for index in range(num_seeds)]
+
+    if batch_size != 1:
+        raise ValueError(
+            'This plotting script assumes batch_size=1 so each history point '
+            'matches one full training iteration.'
+        )
 
     template_rollout = TorchRollout(env.model, horizon=horizon, logic=FuzzyLogic())
     _, observation_template, _ = template_rollout.reset()
-    policy = state2action(
-        observation_template=observation_template,
-        action_template=template_rollout.noop_actions,
-        hidden_sizes=hidden_sizes,
-    )
+    action_template = template_rollout.noop_actions
 
-    trainer = Train(
-        horizon=horizon,
-        model=env.model,
-        action_space=env.action_space,
-        policy=policy,
-        lr=0.01,
-        hidden_sizes=hidden_sizes,
-        batch_size=10,
-        seed=12,
-        noise_type_dict={'type': 'constant', 'value': 0.0},
-    )
-    history, trained_policy = trainer.train_trajectory(
-        iterations=20,
-        print_every=2,
-        batch_size=10,
-    )
-    final_sub = history[-1]['final_subs'] if history else None
+    def run_experiment(noise_value: float, label: str):
+        all_training_returns: List[List[float]] = []
+        iteration_axis: List[int] = []
 
-    sample_action_subs = trained_policy(final_sub)
-    #print(f"sample action={sample_action_subs} where the observation is {trained_policy._flatten_observation(final_sub)}")
-    # or we can ger the ovservevation
-    for_obs = TorchRolloutCell(env.model, horizon=1, logic=FuzzyLogic())
-    obs = for_obs.observe(final_sub)
-    print(f"observation is {obs}")
-    sample_action = trained_policy(obs)
-    print(f"sample action={sample_action} where the observation is {obs}")
-    if history:
-        final_metrics = history[-1]
+        for seed in seeds:
+            torch.manual_seed(seed)
+            policy = state2action(
+                observation_template=observation_template,
+                action_template=action_template,
+                hidden_sizes=hidden_sizes,
+            )
+
+            trainer = Train(
+                horizon=horizon,
+                model=env.model,
+                action_space=env.action_space,
+                policy=policy,
+                lr=0.01,
+                hidden_sizes=hidden_sizes,
+                batch_size=batch_size,
+                seed=seed,
+                noise_type_dict={'type': 'constant', 'value': noise_value},
+            )
+
+            history, trained_policy = trainer.train_trajectory(
+                iterations=iterations,
+                print_every=0,
+                batch_size=batch_size,
+            )
+            del trained_policy
+
+            seed_iterations = [int(item['iteration']) for item in history]
+            seed_returns = [float(item['return']) for item in history]
+            if len(seed_iterations) != iterations:
+                raise ValueError(
+                    f'Expected exactly {iterations} history points for seed {seed}, '
+                    f'got {len(seed_iterations)}.'
+                )
+            if not iteration_axis:
+                iteration_axis = seed_iterations
+            elif iteration_axis != seed_iterations:
+                raise ValueError('Training iterations are inconsistent across seeds.')
+
+            all_training_returns.append(seed_returns)
+            print(
+                f"{label}: seed={seed:2d} "
+                f"start_return={seed_returns[0]:10.4f} "
+                f"final_return={seed_returns[-1]:10.4f}"
+            )
+
+        returns_tensor = torch.tensor(all_training_returns, dtype=torch.float32)
+        mean_training_returns = returns_tensor.mean(dim=0)
+        std_training_returns = returns_tensor.std(dim=0, unbiased=False)
+        var_training_returns = returns_tensor.var(dim=0, unbiased=False)
+
+        print(f"\n=== {label} ===")
         print(
-            f"final chunk return={final_metrics['return']:.4f} "
-            f"after iter={int(final_metrics['iteration'])} "
-            f"chunk={int(final_metrics['chunk_index'])}/{int(final_metrics['num_chunks'])}"
+            f"final mean train return={mean_training_returns[-1].item():.4f} "
+            f"std={std_training_returns[-1].item():.4f} "
+            f"over {len(seeds)} seeds"
         )
+
+        return {
+            'label': label,
+            'iterations': iteration_axis,
+            'all_training_returns': all_training_returns,
+            'mean_training_returns': mean_training_returns.tolist(),
+            'std_training_returns': std_training_returns.tolist(),
+            'var_training_returns': var_training_returns.tolist(),
+        }
+
+    results_no_noise = run_experiment(noise_value=0.0, label='without exploration noise')
+    results_with_noise = run_experiment(noise_value=3.0, label='with exploration noise = 3.0')
+
+    plt.switch_backend("Agg")
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    def plot_mean_with_std_band(results: Dict[str, Any], color: str) -> None:
+        mean_values = results['mean_training_returns']
+        std_values = results['std_training_returns']
+        lower = [mean - std for (mean, std) in zip(mean_values, std_values)]
+        upper = [mean + std for (mean, std) in zip(mean_values, std_values)]
+
+        ax.plot(
+            results['iterations'],
+            mean_values,
+            color=color,
+            linewidth=2.0,
+            label=results['label'],
+        )
+        ax.fill_between(
+            results['iterations'],
+            lower,
+            upper,
+            color=color,
+            alpha=0.18,
+        )
+
+    plot_mean_with_std_band(results_no_noise, color='tab:blue')
+    plot_mean_with_std_band(results_with_noise, color='tab:orange')
+
+    ax.set_xlabel('Training iteration')
+    ax.set_ylabel('Training return')
+    ax.set_title(
+        f'Reservoir instance_3 training curve: mean +/- std over {len(seeds)} seeds'
+    )
+    ax.grid(True)
+    ax.legend()
+
+    fig.tight_layout()
+    output_path = PACKAGE_ROOT / "results_plot.png"
+    fig.savefig(output_path)
+    print(f"Plot saved to {output_path}")
 
 
 if __name__ == '__main__':
