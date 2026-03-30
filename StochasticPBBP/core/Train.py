@@ -32,12 +32,14 @@ class Train:
                  hidden_sizes: Sequence[int]=(64, 64),
                  seed: int=0,
                  simulator: Optional[Any]=None,
+                 noise_type_dict: Optional[Dict[str, Any]]=None,
                  batch_size: int=1) -> None:
         self.action_space = action_space
         self.hidden_sizes = tuple(hidden_sizes)
         self.default_batch_size = self._validate_batch_size(batch_size)
         self.seed = seed
         torch.manual_seed(seed)
+        self.noise_type_dict = deepcopy(noise_type_dict)
 
         self.rollout = TorchRollout(model, horizon=horizon, logic=FuzzyLogic())
         self.rollout.cell.key.manual_seed(seed)
@@ -95,7 +97,8 @@ class Train:
                             model_params: Optional[Dict[str, Any]],
                             policy_state: Any,
                             chunk_steps: int,
-                            start_step: int) -> Dict[str, Any]:
+                            start_step: int,
+                            noise_type_dict: Optional[Dict[str, Any]]=None) -> Dict[str, Any]:
         trace = self.rollout(
             policy=self.policy,
             initial_subs=initial_subs,
@@ -103,6 +106,7 @@ class Train:
             policy_state=policy_state,
             steps=chunk_steps,
             start_step=start_step,
+            noise_type_dict=noise_type_dict,
         )
         objective = self._reduce_objective(trace.return_)
         loss = -objective
@@ -120,11 +124,16 @@ class Train:
                          iterations: int=10,
                          print_every: int=1,
                          batch_size: Optional[int]=None,
-                         batch: Optional[bool]=None) -> List[Dict[str, float]]:
+                         batch: Optional[bool]=None,
+                         noise_type_dict: Optional[Dict[str, Any]]=None) -> List[Dict[str, float]]:
         del batch
         history: List[Dict[str, float]] = []
         effective_batch_size = self.default_batch_size if batch_size is None else (
             self._validate_batch_size(batch_size)
+        )
+        effective_noise_type_dict = (
+            deepcopy(self.noise_type_dict)
+            if noise_type_dict is None else deepcopy(noise_type_dict)
         )
         chunk_sizes = self._build_chunk_sizes(effective_batch_size)
 
@@ -145,6 +154,7 @@ class Train:
                     policy_state=current_policy_state,
                     chunk_steps=chunk_steps,
                     start_step=start_step,
+                    noise_type_dict=effective_noise_type_dict,
                 )
                 trace = result['trace']
 
@@ -193,9 +203,11 @@ class Train:
     def train_batch(self,
                     batch_size: int,
                     iterations: int=10,
-                    print_every: int=1) -> List[Dict[str, float]]:
+                    print_every: int=1,
+                    noise_type_dict: Optional[Dict[str, Any]]=None) -> List[Dict[str, float]]:
         return self.train_trajectory(
             iterations=iterations,
             print_every=print_every,
             batch_size=batch_size,
+            noise_type_dict=noise_type_dict,
         )
