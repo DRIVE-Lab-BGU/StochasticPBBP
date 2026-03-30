@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import time
 import contextlib
 import io
 import os
@@ -174,7 +174,7 @@ def main() -> None:
     print(f"INSTANCE={instance}")
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
-    horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "100"))
+    horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "200"))
     hidden_sizes = (12, 12)
     iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "300"))
     num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "10"))
@@ -337,19 +337,48 @@ def main() -> None:
             'std_training_returns': std_training_returns.tolist(),
             'var_training_returns': var_training_returns.tolist(),
         }
+    ###########################
 
+    #       without noise     #
+    
+    ###########################
+    start = time.perf_counter()
     results_no_noise = run_experiment(
         noise_value=0.0,
         label='torch without exploration noise',
     )
+    end = time.perf_counter()
+    elapsed = end - start
+    print(f"Elapsed time: {elapsed:.6f} seconds torch without noise")
+    
+    
+    ###########################
+
+    #       with noise        #
+
+    ###########################
+    start = time.perf_counter()
     results_with_noise = run_experiment(
         noise_value=3.0,
         label='torch with exploration noise = 3.0',
     )
+    end = time.perf_counter()
+    elapsed = end - start
+    print(f"Elapsed time: {elapsed:.6f} seconds torch with noise")
+    ###########################
+
+    #          jax            #
+
+    ###########################
+    start = time.perf_counter()
     results_jax = run_jaxplan_experiment(
         label='jax deep reactive policy (12, 12) without exploration noise',
     )
 
+    end = time.perf_counter()
+    elapsed = end - start
+    print(f"Elapsed time: {elapsed:.6f} seconds torch with noise") 
+    ###########################
     plt.switch_backend("Agg")
     fig, axes = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
 
