@@ -168,41 +168,112 @@ class state2action(nn.Module):
 
 def main() -> None:
     domain = PACKAGE_ROOT / "problems" / "reservoir" / "domain.rddl"
-    instance = PACKAGE_ROOT / "problems" / "reservoir" / "instance_3.rddl"
+    instance = PACKAGE_ROOT / "problems" / "reservoir" / "instance_4.rddl"
 
     print(f"DOMAIN={domain}")
     print(f"INSTANCE={instance}")
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
-    horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "200"))
+    horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "400"))
     hidden_sizes = (12, 12)
-    iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "300"))
-    num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "10"))
+    iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "200"))
+    num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "20"))
     seed_offset = int(os.environ.get("NOISE_PLOT_SEED_OFFSET", "0"))
-    batch_size = 1
+    batched_batch_size = int(os.environ.get("NOISE_PLOT_BATCH_SIZE", "10"))
     seeds = [seed_offset + index for index in range(num_seeds)]
-
-    if batch_size != 1:
-        raise ValueError(
-            'This plotting script assumes batch_size=1 so each history point '
-            'matches one full training iteration.'
-        )
 
     template_rollout = TorchRollout(env.model, horizon=horizon, logic=FuzzyLogic())
     _, observation_template, _ = template_rollout.reset()
     action_template = template_rollout.noop_actions
 
-    def run_experiment(noise_value: float, label: str):
+    def collapse_history_to_iterations(
+        history: List[Dict[str, Any]],
+        *,
+        label: str,
+        seed: int,
+    ) -> Tuple[List[int], List[float]]:
+        if not history:
+            raise ValueError(f'No training history was returned for {label}, seed={seed}.')
+
+        returns_by_iteration: Dict[int, float] = {}
+        chunks_by_iteration: Dict[int, int] = {}
+        expected_chunks: Optional[int] = None
+
+        for item in history:
+            iteration = int(item['iteration'])
+            num_chunks = int(item['num_chunks'])
+
+            if expected_chunks is None:
+                expected_chunks = num_chunks
+            elif expected_chunks != num_chunks:
+                raise ValueError(
+                    f'Inconsistent num_chunks for {label}, seed={seed}: '
+                    f'expected {expected_chunks}, got {num_chunks}.'
+                )
+
+            returns_by_iteration.setdefault(iteration, 0.0)
+            returns_by_iteration[iteration] += float(item['return'])
+            chunks_by_iteration[iteration] = chunks_by_iteration.get(iteration, 0) + 1
+
+        iteration_axis = sorted(returns_by_iteration)
+        expected_iteration_axis = list(range(1, iterations + 1))
+        if iteration_axis != expected_iteration_axis:
+            raise ValueError(
+                f'Expected iterations {expected_iteration_axis[:3]}...{expected_iteration_axis[-3:]}, '
+                f'got {iteration_axis[:3]}...{iteration_axis[-3:]} '
+                f'for {label}, seed={seed}.'
+            )
+
+        assert expected_chunks is not None
+        for iteration in iteration_axis:
+            seen_chunks = chunks_by_iteration[iteration]
+            if seen_chunks != expected_chunks:
+                raise ValueError(
+                    f'Expected {expected_chunks} chunks for iteration {iteration} in '
+                    f'{label}, seed={seed}, got {seen_chunks}.'
+                )
+
+        return iteration_axis, [returns_by_iteration[iteration] for iteration in iteration_axis]
+    
+    def init_weights_xavier(m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
+    def init_weights_jax(m):
+        if isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+    
+    def run_experiment(noise_value: float, label: str, batch_size: int=1 , init_weights_fn: str = "jax") -> Dict[str, Any]:
         all_training_returns: List[List[float]] = []
         iteration_axis: List[int] = []
+        import torch.nn as nn
+
 
         for seed in seeds:
             torch.manual_seed(seed)
-            policy = state2action(
-                observation_template=observation_template,
-                action_template=action_template,
-                hidden_sizes=hidden_sizes,
-            )
+
+            if init_weights_fn == "jax":
+                init_weights_fn = init_weights_jax
+                policy = state2action(
+                    observation_template=observation_template,
+                    action_template=action_template,
+                    hidden_sizes=hidden_sizes,
+                )
+
+                policy.apply(init_weights_jax)
+            else:
+                init_weights_fn = init_weights_xavier
+                policy = state2action(
+                    observation_template=observation_template,
+                    action_template=action_template,
+                    hidden_sizes=hidden_sizes,
+                )
+
+                policy.apply(init_weights_xavier)
 
             trainer = Train(
                 horizon=horizon,
@@ -223,13 +294,11 @@ def main() -> None:
             )
             del trained_policy
 
-            seed_iterations = [int(item['iteration']) for item in history]
-            seed_returns = [float(item['return']) for item in history]
-            if len(seed_iterations) != iterations:
-                raise ValueError(
-                    f'Expected exactly {iterations} history points for seed {seed}, '
-                    f'got {len(seed_iterations)}.'
-                )
+            seed_iterations, seed_returns = collapse_history_to_iterations(
+                history,
+                label=label,
+                seed=seed,
+            )
             if not iteration_axis:
                 iteration_axis = seed_iterations
             elif iteration_axis != seed_iterations:
@@ -268,6 +337,7 @@ def main() -> None:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 import jax.random as jax_random
                 from pyRDDLGym_jax.core.planner import JaxBackpropPlanner, JaxDeepReactivePolicy
+                from pyRDDLGym_jax.core.logic import FuzzyLogic as JaxFuzzyLogic
         except ModuleNotFoundError as exc:
             raise RuntimeError(
                 'JaxPlan comparison requires jax and pyRDDLGym_jax to be installed.'
@@ -339,32 +409,67 @@ def main() -> None:
         }
     ###########################
 
-    #       without noise     #
-    
+    #   torch without noise   #
+    #      without batch      #
+
     ###########################
     start = time.perf_counter()
-    results_no_noise = run_experiment(
+    results_no_noise_no_batch = run_experiment(
         noise_value=0.0,
-        label='torch without exploration noise',
+        label='torch | no noise | batch=1',
+        batch_size=1,
     )
     end = time.perf_counter()
     elapsed = end - start
-    print(f"Elapsed time: {elapsed:.6f} seconds torch without noise")
-    
-    
+    print(f"Elapsed time: {elapsed:.6f} seconds torch no noise batch=1")
+
     ###########################
 
-    #       with noise        #
+    #    torch with noise     #
+    #      without batch      #
 
     ###########################
     start = time.perf_counter()
-    results_with_noise = run_experiment(
+    results_with_noise_no_batch = run_experiment(
         noise_value=3.0,
-        label='torch with exploration noise = 3.0',
+        label='torch | noise=3.0 | batch=1',
+        batch_size=1,
     )
     end = time.perf_counter()
     elapsed = end - start
-    print(f"Elapsed time: {elapsed:.6f} seconds torch with noise")
+    print(f"Elapsed time: {elapsed:.6f} seconds torch noise batch=1")
+
+    ###########################
+
+    #   torch without noise   #
+    #       with batch        #
+
+    ###########################
+    # start = time.perf_counter()
+    # results_no_noise_with_batch = run_experiment(
+    #     noise_value=0.0,
+    #     label=f'torch | no noise | batch={batched_batch_size}',
+    #     batch_size=batched_batch_size,
+    # )
+    # end = time.perf_counter()
+    # elapsed = end - start
+    # print(f"Elapsed time: {elapsed:.6f} seconds torch no noise batch={batched_batch_size}")
+
+    ###########################
+
+    #    torch with noise     #
+    #       with batch        #
+
+    ###########################
+    # start = time.perf_counter()
+    # results_with_noise_with_batch = run_experiment(
+    #     noise_value=3.0,
+    #     label=f'torch | noise=3.0 | batch={batched_batch_size}',
+    #     batch_size=batched_batch_size,
+    # )
+    # end = time.perf_counter()
+    # elapsed = end - start
+    # print(f"Elapsed time: {elapsed:.6f} seconds torch noise batch={batched_batch_size}")
     ###########################
 
     #          jax            #
@@ -372,17 +477,23 @@ def main() -> None:
     ###########################
     start = time.perf_counter()
     results_jax = run_jaxplan_experiment(
-        label='jax deep reactive policy (12, 12) without exploration noise',
+        label='jax | no noise | batch=1',
     )
 
     end = time.perf_counter()
     elapsed = end - start
-    print(f"Elapsed time: {elapsed:.6f} seconds torch with noise") 
+    print(f"Elapsed time: {elapsed:.6f} seconds jax no noise batch=1")
     ###########################
     plt.switch_backend("Agg")
-    fig, axes = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
 
-    def plot_mean_with_std_band(ax, results: Dict[str, Any], color: str) -> None:
+    def plot_mean_with_std_band(
+        ax,
+        results: Dict[str, Any],
+        *,
+        color: str,
+        linestyle: str='-',
+    ) -> None:
         mean_values = results['mean_training_returns']
         std_values = results['std_training_returns']
         lower = [mean - std for (mean, std) in zip(mean_values, std_values)]
@@ -392,6 +503,7 @@ def main() -> None:
             results['iterations'],
             mean_values,
             color=color,
+            linestyle=linestyle,
             linewidth=2.0,
             label=results['label'],
         )
@@ -403,22 +515,65 @@ def main() -> None:
             alpha=0.18,
         )
 
-    plot_mean_with_std_band(axes[0], results_no_noise, color='tab:blue')
-    plot_mean_with_std_band(axes[0], results_with_noise, color='tab:orange')
+    plot_mean_with_std_band(
+        axes[0],
+        results_no_noise_no_batch,
+        color='tab:blue',
+        linestyle='-',
+    )
+    plot_mean_with_std_band(
+        axes[0],
+        results_with_noise_no_batch,
+        color='tab:orange',
+        linestyle='-',
+    )
+    # plot_mean_with_std_band(
+    #     axes[0],
+    #     results_no_noise_with_batch,
+    #     color='tab:blue',
+    #     linestyle='--',
+    # )
+    # plot_mean_with_std_band(
+    #     axes[0],
+    #     results_with_noise_with_batch,
+    #     color='tab:orange',
+    #     linestyle='--',
+    # )
+    plot_mean_with_std_band(
+        axes[0],
+        results_jax,
+        color='tab:green',
+        linestyle='-.',
+    )
     axes[0].set_ylabel('Training return')
     axes[0].set_title(
-        f'Torch training curves: mean +/- std over {len(seeds)} seeds'
+        f'Torch and Jax: with/without noise and with/without batch over {len(seeds)} seeds'
     )
     axes[0].grid(True)
     axes[0].legend()
 
-    plot_mean_with_std_band(axes[1], results_no_noise, color='tab:blue')
-    plot_mean_with_std_band(axes[1], results_jax, color='tab:green')
-    plot_mean_with_std_band(axes[1], results_with_noise, color='tab:orange')
+    # plot_mean_with_std_band(
+    #     axes[1],
+    #     results_no_noise_with_batch,
+    #     color='tab:blue',
+    #     linestyle='--',
+    # )
+    # plot_mean_with_std_band(
+    #     axes[1],
+    #     results_with_noise_with_batch,
+    #     color='tab:orange',
+    #     linestyle='--',
+    # )
+    plot_mean_with_std_band(
+        axes[1],
+        results_jax,
+        color='tab:green',
+        linestyle='-.',
+    )
     axes[1].set_xlabel('Training iteration')
     axes[1].set_ylabel('Training return')
     axes[1].set_title(
-        f'Torch no-noise vs Jax DRP (12, 12) no-noise: mean +/- std over {len(seeds)} seeds'
+        f'Torch with batch vs Jax without batch over {len(seeds)} seeds'
     )
     axes[1].grid(True)
     axes[1].legend()
