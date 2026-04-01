@@ -178,9 +178,9 @@ def main() -> None:
     hidden_sizes = (12, 12)
     iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "200"))
     num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "20"))
-    seed_offset = int(os.environ.get("NOISE_PLOT_SEED_OFFSET", "0"))
+    seed_offset = int(os.environ.get("NOISE_PLOT_SEED_OFFSET", "112"))
     batched_batch_size = int(os.environ.get("NOISE_PLOT_BATCH_SIZE", "10"))
-    seeds = [seed_offset + index for index in range(num_seeds)]
+    seeds = [seed_offset + 2*index for index in range(num_seeds)]
 
     template_rollout = TorchRollout(env.model, horizon=horizon, logic=FuzzyLogic())
     _, observation_template, _ = template_rollout.reset()
@@ -445,15 +445,15 @@ def main() -> None:
     #       with batch        #
 
     ###########################
-    # start = time.perf_counter()
-    # results_no_noise_with_batch = run_experiment(
-    #     noise_value=0.0,
-    #     label=f'torch | no noise | batch={batched_batch_size}',
-    #     batch_size=batched_batch_size,
-    # )
-    # end = time.perf_counter()
-    # elapsed = end - start
-    # print(f"Elapsed time: {elapsed:.6f} seconds torch no noise batch={batched_batch_size}")
+    start = time.perf_counter()
+    results_no_noise_with_batch = run_experiment(
+        noise_value=0.0,
+        label=f'torch | no noise | batch={batched_batch_size}',
+        batch_size=batched_batch_size,
+    )
+    end = time.perf_counter()
+    elapsed = end - start
+    print(f"Elapsed time: {elapsed:.6f} seconds torch no noise batch={batched_batch_size}")
 
     ###########################
 
@@ -461,15 +461,15 @@ def main() -> None:
     #       with batch        #
 
     ###########################
-    # start = time.perf_counter()
-    # results_with_noise_with_batch = run_experiment(
-    #     noise_value=3.0,
-    #     label=f'torch | noise=3.0 | batch={batched_batch_size}',
-    #     batch_size=batched_batch_size,
-    # )
-    # end = time.perf_counter()
-    # elapsed = end - start
-    # print(f"Elapsed time: {elapsed:.6f} seconds torch noise batch={batched_batch_size}")
+    start = time.perf_counter()
+    results_with_noise_with_batch = run_experiment(
+        noise_value=3.0,
+        label=f'torch | noise=3.0 | batch={batched_batch_size}',
+        batch_size=batched_batch_size,
+    )
+    end = time.perf_counter()
+    elapsed = end - start
+    print(f"Elapsed time: {elapsed:.6f} seconds torch noise batch={batched_batch_size}")
     ###########################
 
     #          jax            #
@@ -527,18 +527,18 @@ def main() -> None:
         color='tab:orange',
         linestyle='-',
     )
-    # plot_mean_with_std_band(
-    #     axes[0],
-    #     results_no_noise_with_batch,
-    #     color='tab:blue',
-    #     linestyle='--',
-    # )
-    # plot_mean_with_std_band(
-    #     axes[0],
-    #     results_with_noise_with_batch,
-    #     color='tab:orange',
-    #     linestyle='--',
-    # )
+    plot_mean_with_std_band(
+        axes[0],
+        results_no_noise_with_batch,
+        color='tab:blue',
+        linestyle='--',
+    )
+    plot_mean_with_std_band(
+        axes[0],
+        results_with_noise_with_batch,
+        color='tab:orange',
+        linestyle='--',
+    )
     plot_mean_with_std_band(
         axes[0],
         results_jax,
@@ -552,18 +552,18 @@ def main() -> None:
     axes[0].grid(True)
     axes[0].legend()
 
-    # plot_mean_with_std_band(
-    #     axes[1],
-    #     results_no_noise_with_batch,
-    #     color='tab:blue',
-    #     linestyle='--',
-    # )
-    # plot_mean_with_std_band(
-    #     axes[1],
-    #     results_with_noise_with_batch,
-    #     color='tab:orange',
-    #     linestyle='--',
-    # )
+    plot_mean_with_std_band(
+        axes[1],
+        results_no_noise_with_batch,
+        color='tab:blue',
+        linestyle='--',
+    )
+    plot_mean_with_std_band(
+        axes[1],
+        results_with_noise_with_batch,
+        color='tab:orange',
+        linestyle='--',
+    )
     plot_mean_with_std_band(
         axes[1],
         results_jax,
