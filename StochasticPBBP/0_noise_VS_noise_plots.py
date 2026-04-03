@@ -17,10 +17,10 @@ print(f"PACKAGE_ROOT={PACKAGE_ROOT}")
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from core.Policies import TensorDict
 from core.Rollout import TorchRollout
 from core.Train import Train
 from core.Logic import FuzzyLogic
+from utils.Policies import TensorDict
 
 class state2action(nn.Module):
     def __init__(self,

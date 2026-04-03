@@ -22,7 +22,7 @@ from StochasticPBBP.tests.simulator_test import PACKAGE_ROOT
 from core.Logic import ExactLogic  # noqa: E402
 from core.Rollout import TorchRollout  # noqa: E402
 from core.Simulator import TorchRDDLSimulator  # noqa: E402
-from core.Policies import random_policy
+from utils.Policies import random_policy
 
 
 

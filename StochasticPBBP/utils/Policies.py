@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import pyRDDLGym
 import torch
 from torch import nn
 
-from .Simulator import TorchRDDLSimulator
+from StochasticPBBP.core.Simulator import TorchRDDLSimulator
 
 TensorDict = Dict[str, torch.Tensor]
 
@@ -22,11 +20,14 @@ def _as_tensor(value: Any,
         tensor = tensor.to(dtype=dtype or tensor.dtype, device=device or tensor.device)
     return tensor
 
+
 class MPCPolicy:
     pass
 
+
 class SLPPolicy:
     pass
+
 
 class random_policy:
     def __init__(self, model, logic, noise=None):
@@ -81,7 +82,8 @@ class StationaryMarkov(nn.Module):
     def __init__(self,
                  observation_template: TensorDict,
                  action_template: TensorDict,
-                 hidden_sizes: Tuple[int, ...]=(64, 64)) -> None:
+                 hidden_sizes: Tuple[int, ...]=(64, 64),
+                 init_weights_fn: str='kaiming') -> None:
         super().__init__()
         if not observation_template:
             raise ValueError('observation_template must contain at least one tensor.')
@@ -102,6 +104,8 @@ class StationaryMarkov(nn.Module):
         output_dim = sum(spec['numel'] for spec in self.action_specs)
         layers.append(nn.Linear(input_dim, output_dim))
         self.network = nn.Sequential(*layers)
+        # Default to Kaiming/JAX-style init because the network uses ReLU hidden layers.
+        self._initialize_network(init_weights_fn)
 
     @staticmethod
     def _as_tensor(value: Any) -> torch.Tensor:
@@ -163,6 +167,33 @@ class StationaryMarkov(nn.Module):
             actions[spec['name']] = raw_action.to(dtype=spec['dtype'], device=spec['device'])
             start = end
         return actions
+
+    def _initialize_network(self, init_weights_fn: str) -> None:
+        normalized_name = init_weights_fn.strip().lower()
+        if normalized_name in {'kaiming', 'jax'}:
+            initializer = self._init_weights_kaiming
+        elif normalized_name == 'xavier':
+            initializer = self._init_weights_xavier
+        else:
+            raise ValueError(
+                f'Unsupported init_weights_fn={init_weights_fn!r}. '
+                "Expected 'kaiming', 'jax', or 'xavier'."
+            )
+        self.network.apply(initializer)
+
+    @staticmethod
+    def _init_weights_xavier(module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    @staticmethod
+    def _init_weights_kaiming(module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     def forward(self,
                 observation: TensorDict,
@@ -242,5 +273,5 @@ class GaussianPolicy(nn.Module):
                 policy_state: Any=None) -> TensorDict:
         del observation, step, policy_state
         dist = self.distribution()
-        flat_action =  dist.rsample()
+        flat_action = dist.rsample()
         return self._pack_actions(flat_action)

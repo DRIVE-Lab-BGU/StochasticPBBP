@@ -24,7 +24,7 @@ repository adds a PyTorch backend around that model so you can:
 | Simulator | `StochasticPBBP/core/Simulator.py` | Executes one compiled transition at a time |
 | Rollout wrapper | `StochasticPBBP/core/Rollout.py` | Unrolls a policy over a horizon and returns a `RolloutTrace` |
 | Logic backends | `StochasticPBBP/core/Logic.py` | Provides exact and fuzzy semantics for logical/comparison operators |
-| Policy and trainer | `StochasticPBBP/core/Policies.py`, `StochasticPBBP/core/Train.py` | Defines `GaussianPolicy` and horizon batch-sampling training |
+| Policy and trainer | `StochasticPBBP/utils/Policies.py`, `StochasticPBBP/core/Train.py` | Defines `GaussianPolicy` and horizon batch-sampling training |
 | Training entrypoint | `StochasticPBBP/Runs.py` | Wires the policy, trainer, CLI arguments, and example domain together |
 
 ## Example Domains Included

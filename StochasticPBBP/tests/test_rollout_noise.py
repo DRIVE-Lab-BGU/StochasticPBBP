@@ -14,7 +14,7 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 from core.Logic import ExactLogic  # noqa: E402
 from core.Rollout import TorchRollout, TorchRolloutCell  # noqa: E402
-from core.Noise import noise  # noqa: E402
+from utils.Noise import noise  # noqa: E402
 from core.Simulator import TorchRDDLSimulator  # noqa: E402
 DOMAIN = PACKAGE_ROOT / "problems" / "reservoir" / "domain.rddl"
 INSTANCE = PACKAGE_ROOT / "problems" / "reservoir" / "instance_1.rddl"

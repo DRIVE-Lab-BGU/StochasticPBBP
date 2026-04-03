@@ -16,8 +16,10 @@ from pyRDDLGym.core.debug.exception import (
 )
 from pyRDDLGym.core.debug.logger import Logger
 
-from .Initializer import RDDLValueInitializer as TorchRDDLValueInitializer
-from .Logic import ExactLogic, FuzzyLogic
+from StochasticPBBP.core.Initializer import RDDLValueInitializer as TorchRDDLValueInitializer
+from StochasticPBBP.core.Logic import ExactLogic, FuzzyLogic
+# from .Initializer import RDDLValueInitializer as TorchRDDLValueInitializer
+# from .Logic import ExactLogic, FuzzyLogic
 
 
 # # domain.rdlll + instance.rddl 

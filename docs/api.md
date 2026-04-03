@@ -243,7 +243,7 @@ from pathlib import Path
 
 import pyRDDLGym
 
-from StochasticPBBP.core.Policies import GaussianPolicy
+from StochasticPBBP.utils.Policies import GaussianPolicy
 from StochasticPBBP.core.Simulator import TorchRDDLSimulator
 from StochasticPBBP.core.Train import Train
 

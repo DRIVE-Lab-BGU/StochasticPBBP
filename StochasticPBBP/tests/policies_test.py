@@ -11,7 +11,7 @@ print(f"####################PACKAGE_ROOT={PACKAGE_ROOT}")
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from core.Policies import random_policy
+from utils.Policies import random_policy
 from core.Compiler import TorchRDDLCompiler
 from core.Logic import ExactLogic
 from core.Initializer import RDDLValueInitializer

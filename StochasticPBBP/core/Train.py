@@ -6,9 +6,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 from torch import nn
 
-from .Logic import FuzzyLogic
-from .Policies import GaussianPolicy
-from .Rollout import TorchRollout
+from StochasticPBBP.core.Logic import FuzzyLogic
+from StochasticPBBP.core.Rollout import TorchRollout
+from StochasticPBBP.utils.Policies import GaussianPolicy
+
+# from .Logic import FuzzyLogic
+# from .Policies import GaussianPolicy
+# from .Rollout import TorchRollout
 
 
 class Train:

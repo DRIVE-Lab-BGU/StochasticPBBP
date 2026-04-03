@@ -12,8 +12,11 @@ from torch import nn
 
 from pyRDDLGym.core.compiler.model import RDDLLiftedModel
 from pyRDDLGym.core.debug.logger import Logger
-from .Compiler import TorchRDDLCompiler
-from .Noise import noise
+from StochasticPBBP.core.Compiler import TorchRDDLCompiler
+from StochasticPBBP.utils.Noise import noise
+# from .Compiler import TorchRDDLCompiler
+# from .Noise import noise
+
 TensorDict = Dict[str, torch.Tensor]
 PolicyOutput = Union[TensorDict, Tuple[TensorDict, Any]]
 PolicyFn = Callable[..., PolicyOutput]
@@ -76,7 +79,7 @@ class TorchRolloutCell(nn.Module):
         self.compiler = compiled
         self.step_fn = compiled.compile_transition(cache_path_info=False)
         self.init_values = self._clone_structure(compiled.init_values)
-        # paramter for logic
+        # parameters for logic
         self.model_params = self._clone_structure(compiled.model_params)
         self.observed_fluents = tuple(
             rddl_model.observ_fluents if rddl_model.observ_fluents else rddl_model.state_fluents

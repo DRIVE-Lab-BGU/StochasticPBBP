@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pyRDDLGym
 
-from core.Policies import StationaryMarkov
 from core.Logic import FuzzyLogic
 from core.Rollout import TorchRollout, TorchRolloutCell
 from core.Train import Train
+from utils.Policies import StationaryMarkov
 
 def main() -> None:
     package_root = Path(__file__).resolve().parent
@@ -20,12 +20,13 @@ def main() -> None:
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
     # horizon = env.horizon
-    horizon = 120
+    horizon = 400
     hidden_sizes = (12, 12)
     # One full-horizon batch per iteration. Set batch_size smaller than horizon
     # to partition the horizon, and increase batch_num to draw more batches.
     batch_size = horizon
     batch_num = 1
+    iterations = 200
 
     template_rollout = TorchRollout(env.model, horizon=horizon, logic=FuzzyLogic())
     _, observation_template, _ = template_rollout.reset()
@@ -45,10 +46,10 @@ def main() -> None:
         batch_size=batch_size,
         batch_num=batch_num,
         seed=12,
-        noise_type_dict={'type': 'constant', 'value': 0.0},
+        noise_type_dict={'type': 'constant', 'value': 3.0},
     )
     history, trained_policy = trainer.train_trajectory(
-        iterations=200,
+        iterations=iterations,
         print_every=2,
         batch_size=batch_size,
         batch_num=batch_num,
