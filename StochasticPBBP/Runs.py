@@ -1,181 +1,35 @@
 from __future__ import annotations
 
-import sys
+import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 
-import torch
-import torch.nn as nn
 import pyRDDLGym
 
-PACKAGE_ROOT = Path(__file__).resolve().parent
-print(f"PACKAGE_ROOT={PACKAGE_ROOT}")
-if str(PACKAGE_ROOT) not in sys.path:
-    sys.path.insert(0, str(PACKAGE_ROOT))
-
-from core.Policies import TensorDict
-from core.Rollout import TorchRollout ,TorchRolloutCell
-from core.Train import Train
+from core.Policies import StationaryMarkov
 from core.Logic import FuzzyLogic
-
-class state2action(nn.Module):
-    def __init__(self,
-                 observation_template: TensorDict,
-                 action_template: TensorDict,
-                 hidden_sizes: Tuple[int, ...]=(64, 64)) -> None:
-        super().__init__()
-        if not observation_template:
-            raise ValueError('observation_template must contain at least one tensor.')
-        if not action_template:
-            raise ValueError('action_template must contain at least one tensor.')
-
-        self.observation_specs = self._build_observation_specs(observation_template)
-        self.action_specs = self._build_action_specs(action_template)
-        self.device = self.observation_specs[0]['device']
-        self.dtype = torch.float32
-
-        layers = []
-        input_dim = sum(spec['numel'] for spec in self.observation_specs)
-        for hidden_size in hidden_sizes:
-            layers.append(nn.Linear(input_dim, hidden_size))
-            layers.append(nn.ReLU())
-            input_dim = hidden_size
-        output_dim = sum(spec['numel'] for spec in self.action_specs)
-        layers.append(nn.Linear(input_dim, output_dim))
-        self.network = nn.Sequential(*layers)
-
-    @staticmethod
-    def _as_tensor(value: Any) -> torch.Tensor:
-        return value if isinstance(value, torch.Tensor) else torch.as_tensor(value)
-
-    @classmethod
-    def _build_observation_specs(cls, observation_template: TensorDict) -> List[Dict[str, Any]]:
-        """
-        Builds a list of observation specs from the observation template.
-        its get subs and return observation specs for the observation template
-        e.g.
-        observation_template = {
-            'obs1': torch.zeros(2, device='cuda'),
-            'obs2': torch.zeros(3, device='cuda'),
-        }
-        will return
-        [
-            {'name': 'obs1', 'shape': (2,), 'numel': 2, 'dtype': torch.float32, 'device': device('cuda')},
-            {'name': 'obs2', 'shape': (3,), 'numel': 3, 'dtype': torch.float32, 'device': device('cuda')},
-        """
-        specs: List[Dict[str, Any]] = []
-        for (name, template) in observation_template.items():
-            tensor = cls._as_tensor(template)
-            specs.append({
-                'name': name,
-                'shape': tuple(tensor.shape),
-                'numel': int(tensor.numel()),
-                'device': tensor.device,
-            })
-        return specs
-
-    @classmethod
-    def _build_action_specs(cls, action_template: TensorDict) -> List[Dict[str, Any]]:
-        """
-        
-        Builds a list of action specs from the action template.
-        its get subs and return action specs for the action template
-        e.g.
-        action_template = {
-            'action1': torch.zeros(2, device='cuda'),
-            'action2': torch.zeros(3, device='cuda'),
-        }
-        will return
-        [
-            {'name': 'action1', 'shape': (2,), 'numel': 2, 'dtype': torch.float32, 'device': device('cuda')},
-            {'name': 'action2', 'shape': (3,), 'numel': 3, 'dtype': torch.float32, 'device': device('cuda')},
-        ]
-        """
-        specs: List[Dict[str, Any]] = []
-        for (name, template) in action_template.items():
-            tensor = cls._as_tensor(template)
-            if not tensor.dtype.is_floating_point:
-                raise ValueError(
-                    f'state2action supports only floating-point actions, got {name} '
-                    f'with dtype {tensor.dtype}.'
-                )
-            specs.append({
-                'name': name,
-                'shape': tuple(tensor.shape),
-                'numel': int(tensor.numel()),
-                'dtype': tensor.dtype,
-                'device': tensor.device,
-            })
-        return specs
-
-    def _flatten_observation(self, observation: TensorDict) -> torch.Tensor:
-        """
-        Flattens the observation dict into a single tensor by concatenating the tensors in the order of self.observation_specs.
-        e.g. if self.observation_specs is
-        [
-            {'name': 'obs1', 'shape': (2,), 'numel': 2, 'dtype': torch.float32, 'device': device('cuda')},
-            {'name': 'obs2', 'shape': (3,), 'numel': 3, 'dtype': torch.float32, 'device': device('cuda')},
-        ]
-        and the observation is
-        {
-            'obs1': torch.tensor([1.0, 2.0], device='cuda'),
-            'obs2': torch.tensor([3.0, 4.0, 5.0], device='cuda'),
-        }
-        then it will return
-        torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0], device='cuda')
-        e.g. 
-        if we have 3 observation specs and the observation like (temperature, rlevel , sunlight)
-        we will flatten them into a single tensor by concatenating them in the order of the observation specs. 
-        
-        """
-        flat_parts: List[torch.Tensor] = []
-        for spec in self.observation_specs:
-            name = spec['name']
-            if name not in observation:
-                raise KeyError(f'Missing observation fluent <{name}>.')
-            tensor = self._as_tensor(observation[name]).to(device=spec['device'])
-            if tuple(tensor.shape) != spec['shape']:
-                raise ValueError(
-                    f'Observation <{name}> must have shape {spec["shape"]}, '
-                    f'got {tuple(tensor.shape)}.'
-                )
-            flat_parts.append(tensor.to(dtype=self.dtype).reshape(-1))
-        return torch.cat(flat_parts, dim=0)
-
-    def _pack_actions(self, flat_action: torch.Tensor) -> TensorDict:
-        actions: TensorDict = {}
-        start = 0
-        for spec in self.action_specs:
-            end = start + spec['numel']
-            raw_action = flat_action[start:end].reshape(spec['shape'])
-            actions[spec['name']] = raw_action.to(dtype=spec['dtype'], device=spec['device'])
-            start = end
-        return actions
-
-    def forward(self,
-                observation: TensorDict,
-                step: Optional[int]=None,
-                policy_state: Any=None) -> TensorDict:
-        del step, policy_state
-        flat_observation = self._flatten_observation(observation)
-        flat_action = self.network(flat_observation)
-        return self._pack_actions(flat_action)
-
+from core.Rollout import TorchRollout, TorchRolloutCell
+from core.Train import Train
 
 def main() -> None:
-    domain = PACKAGE_ROOT / "problems" / "reservoir" / "domain.rddl"
-    instance = PACKAGE_ROOT / "problems" / "reservoir" / "instance_3.rddl"
+    package_root = Path(__file__).resolve().parent
+    domain = os.path.join(package_root, "problems", "reservoir", "domain.rddl")
+    instance = os.path.join(package_root, "problems", "reservoir", "instance_3.rddl")
 
     print(f"DOMAIN={domain}")
     print(f"INSTANCE={instance}")
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
-    horizon = 113
+    # horizon = env.horizon
+    horizon = 120
     hidden_sizes = (12, 12)
+    # One full-horizon batch per iteration. Set batch_size smaller than horizon
+    # to partition the horizon, and increase batch_num to draw more batches.
+    batch_size = horizon
+    batch_num = 1
 
     template_rollout = TorchRollout(env.model, horizon=horizon, logic=FuzzyLogic())
     _, observation_template, _ = template_rollout.reset()
-    policy = state2action(
+    policy = StationaryMarkov(
         observation_template=observation_template,
         action_template=template_rollout.noop_actions,
         hidden_sizes=hidden_sizes,
@@ -188,20 +42,19 @@ def main() -> None:
         policy=policy,
         lr=0.01,
         hidden_sizes=hidden_sizes,
-        batch_size=10,
+        batch_size=batch_size,
+        batch_num=batch_num,
         seed=12,
         noise_type_dict={'type': 'constant', 'value': 0.0},
     )
     history, trained_policy = trainer.train_trajectory(
-        iterations=20,
+        iterations=200,
         print_every=2,
-        batch_size=10,
+        batch_size=batch_size,
+        batch_num=batch_num,
     )
     final_sub = history[-1]['final_subs'] if history else None
 
-    sample_action_subs = trained_policy(final_sub)
-    #print(f"sample action={sample_action_subs} where the observation is {trained_policy._flatten_observation(final_sub)}")
-    # or we can ger the ovservevation
     for_obs = TorchRolloutCell(env.model, horizon=1, logic=FuzzyLogic())
     obs = for_obs.observe(final_sub)
     print(f"observation is {obs}")
@@ -210,9 +63,11 @@ def main() -> None:
     if history:
         final_metrics = history[-1]
         print(
-            f"final chunk return={final_metrics['return']:.4f} "
+            f"final batch return={final_metrics['return']:.4f} "
             f"after iter={int(final_metrics['iteration'])} "
-            f"chunk={int(final_metrics['chunk_index'])}/{int(final_metrics['num_chunks'])}"
+            f"batch={int(final_metrics['batch_index'])}/{int(final_metrics['batch_num'])} "
+            f"partition={int(final_metrics['partition_index'])}/"
+            f"{int(final_metrics['num_partitions'])}"
         )
 
 

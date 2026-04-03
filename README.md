@@ -54,10 +54,10 @@ Run the built-in training example:
 python StochasticPBBP/Runs.py --iterations 5 --print-every 1
 ```
 
-Chunked horizon training example:
+Partitioned horizon training example:
 
 ```bash
-python StochasticPBBP/Runs.py --iterations 1 --horizon 113 --batch-size 5 --print-every 1
+python StochasticPBBP/Runs.py --iterations 1 --horizon 113 --batch-size 23 --batch-num 5 --print-every 1
 ```
 
 If you do not pass explicit paths, `Runs.py` uses the default reservoir domain:
@@ -72,13 +72,15 @@ The CLI now accepts:
 - `--horizon`
 - `--batch-size`
 
-When `batch_size > 1`, the trainer splits the horizon into nearly equal chunks,
-updates the policy after each chunk, and continues from the previous chunk's
-final `subs` / `model_params` / `policy_state`.
+`batch_size` now means the number of horizon steps used for one gradient
+update. The horizon is partitioned into contiguous batches of at most
+`batch_size` steps, and `batch_num` controls how many of those partitions are
+sampled per training iteration.
 
 Example:
 
-- `horizon=113`, `batch_size=5` -> chunk sizes `[23, 23, 23, 22, 22]`
+- `horizon=113`, `batch_size=113`, `batch_num=1` -> one full-horizon batch
+- `horizon=113`, `batch_size=23`, `batch_num=5` -> partitions `[23, 23, 23, 23, 21]`
 
 ## Python Example
 
