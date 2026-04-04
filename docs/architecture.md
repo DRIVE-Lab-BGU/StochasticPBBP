@@ -18,7 +18,7 @@ TorchRDDLCompiler
         +--> compiled invariants / preconditions / terminations
         |
         v
-TorchRDDLSimulator or TorchRollout
+TorchRollout
         |
         v
 policy evaluation / optimization in Torch
@@ -84,14 +84,10 @@ This is what makes it possible to optimize policies through a rollout in
 
 ## Simulator vs Rollout
 
-### `TorchRDDLSimulator`
+### `TorchRDDLSimulator` (Deprecated)
 
-Use the simulator when:
-
-- you want explicit step-by-step control
-- you care about exact environment execution
-- you want optional action noise during stepping
-- you want grounded observation dictionaries similar to `pyRDDLGym`
+This module is deprecated and retained only for migration/reference. For
+evaluation and exact stepping, use `pyRDDLGym` directly.
 
 ### `TorchRollout`
 
@@ -131,7 +127,7 @@ Example:
 There is one important API difference between the two execution layers:
 
 - `TorchRDDLSimulator` can accept either lifted or grounded actions because it
-  can fall back to `pyRDDLGym` action preparation
+  can fall back to `pyRDDLGym` action preparation, but this path is deprecated
 - `TorchRollout` expects lifted action names and validates them against
   `noop_actions`
 

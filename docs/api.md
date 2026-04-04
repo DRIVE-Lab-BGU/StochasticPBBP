@@ -38,9 +38,9 @@ Important attributes after `compile()`:
 - `preconditions`, `invariants`, `terminations`
 - `model_params`: mutable parameters used by some relaxed operators
 
-## `TorchRDDLSimulator`
+## `TorchRDDLSimulator` (Deprecated)
 
-Location: `StochasticPBBP/core/Simulator.py`
+Location: `StochasticPBBP/deprecated/Simulator.py`
 
 Purpose:
 
@@ -56,7 +56,7 @@ from pathlib import Path
 import pyRDDLGym
 
 from StochasticPBBP.core.Logic import ExactLogic
-from StochasticPBBP.core.Simulator import TorchRDDLSimulator
+from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
 
 root = Path("StochasticPBBP/problems/reservoir")
 env = pyRDDLGym.make(
@@ -244,7 +244,7 @@ from pathlib import Path
 import pyRDDLGym
 
 from StochasticPBBP.utils.Policies import GaussianPolicy
-from StochasticPBBP.core.Simulator import TorchRDDLSimulator
+from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
 from StochasticPBBP.core.Train import Train
 
 root = Path("StochasticPBBP/problems/reservoir")

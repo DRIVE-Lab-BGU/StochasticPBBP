@@ -5,15 +5,20 @@ from pathlib import Path
 
 import pyRDDLGym
 
-from core.Logic import FuzzyLogic
-from core.Rollout import TorchRollout, TorchRolloutCell
-from core.Train import Train
-from utils.Policies import StationaryMarkov
+from StochasticPBBP.core.Logic import FuzzyLogic
+from StochasticPBBP.core.Rollout import TorchRolloutCell, TorchRollout
+from StochasticPBBP.core.Train import Train
+from StochasticPBBP.utils.Noise import AdditiveNoiseFactory
+from StochasticPBBP.utils.Policies import StationaryMarkov
+# from core.Logic import FuzzyLogic
+# from core.Rollout import TorchRollout, TorchRolloutCell
+# from core.Train import Train
+# from utils.Policies import StationaryMarkov
 
 def main() -> None:
     package_root = Path(__file__).resolve().parent
     domain = os.path.join(package_root, "problems", "reservoir", "domain.rddl")
-    instance = os.path.join(package_root, "problems", "reservoir", "instance_3.rddl")
+    instance = os.path.join(package_root, "problems", "reservoir", "instance_4.rddl")
 
     print(f"DOMAIN={domain}")
     print(f"INSTANCE={instance}")
@@ -30,11 +35,19 @@ def main() -> None:
 
     template_rollout = TorchRollout(env.model, horizon=horizon, logic=FuzzyLogic())
     _, observation_template, _ = template_rollout.reset()
+
     policy = StationaryMarkov(
         observation_template=observation_template,
         action_template=template_rollout.noop_actions,
         hidden_sizes=hidden_sizes,
     )
+
+    additive_noise = AdditiveNoiseFactory.create(
+        noise_type='constant',
+        std=0.0,
+        source=template_rollout,
+    )
+
 
     trainer = Train(
         horizon=horizon,
@@ -45,14 +58,15 @@ def main() -> None:
         hidden_sizes=hidden_sizes,
         batch_size=batch_size,
         batch_num=batch_num,
-        seed=12,
-        noise_type_dict={'type': 'constant', 'value': 3.0},
+        seed=112,
+        additive_noise=additive_noise,
     )
     history, trained_policy = trainer.train_trajectory(
         iterations=iterations,
         print_every=2,
         batch_size=batch_size,
         batch_num=batch_num,
+        additive_noise=additive_noise,
     )
     final_sub = history[-1]['final_subs'] if history else None
 

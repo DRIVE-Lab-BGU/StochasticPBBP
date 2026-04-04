@@ -21,7 +21,7 @@ repository adds a PyTorch backend around that model so you can:
 | Component | Location | Purpose |
 | --- | --- | --- |
 | Torch compiler | `StochasticPBBP/core/Compiler.py` | Compiles `RDDLLiftedModel` expressions into PyTorch callables |
-| Simulator | `StochasticPBBP/core/Simulator.py` | Executes one compiled transition at a time |
+| Simulator | `StochasticPBBP/deprecated/Simulator.py` | Deprecated single-step simulator kept for migration |
 | Rollout wrapper | `StochasticPBBP/core/Rollout.py` | Unrolls a policy over a horizon and returns a `RolloutTrace` |
 | Logic backends | `StochasticPBBP/core/Logic.py` | Provides exact and fuzzy semantics for logical/comparison operators |
 | Policy and trainer | `StochasticPBBP/utils/Policies.py`, `StochasticPBBP/core/Train.py` | Defines `GaussianPolicy` and horizon batch-sampling training |
@@ -43,7 +43,6 @@ The current runnable training example uses the `reservoir` domain by default.
 2. Extract `env.model`.
 3. Choose one of the Torch wrappers:
    - `TorchRDDLCompiler` if you want raw compiled callables
-   - `TorchRDDLSimulator` if you want exact single-step execution
    - `TorchRollout` if you want multi-step rollouts inside Torch
 4. Choose `ExactLogic()` for faithful discrete execution or `FuzzyLogic()` for
    soft relaxations.

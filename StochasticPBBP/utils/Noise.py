@@ -1,43 +1,191 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
 import torch
 
-from StochasticPBBP.core.Compiler import FuzzyLogic, TorchRDDLCompiler
+from StochasticPBBP.core.Compiler import TorchRDDLCompiler
+
+@dataclass(frozen=True)
+class NoiseContext:
+    """Execution context passed into additive-noise objects.
+
+    This keeps the noise API extensible for scheduled noise, model-based noise,
+    and rollout-aware perturbations without repeatedly changing method
+    signatures.
+    """
+
+    step: Optional[int]=None
+    iteration: Optional[int]=None
+    subs: Optional[Dict[str, Any]]=None
+    observation: Optional[Dict[str, Any]]=None
+    model: Optional[Any]=None
+    model_params: Optional[Dict[str, Any]]=None
+    policy_state: Optional[Any]=None
 
 
-class noise:
+class AdditiveNoise(ABC):
+    """Base class for additive action-noise processes.
+
+    Subclasses receive the prepared lifted action dictionary and return a new
+    action dictionary with additive perturbations applied to floating-point
+    tensors. Non-tensor and non-floating tensors are passed through unchanged.
+    """
+
+    def __call__(self,
+                 actions: Optional[Dict[str, Any]],
+                 *,
+                 context: Optional[NoiseContext]=None) -> Optional[Dict[str, Any]]:
+        if actions is None:
+            return None
+        local_context = NoiseContext() if context is None else context
+
+        noisy_actions: Dict[str, Any] = {}
+        for (name, value) in actions.items():
+            noisy_actions[name] = self.apply_to_value(
+                name=name,
+                value=value,
+                context=local_context,
+            )
+        return noisy_actions
+
+    def apply_to_value(self,
+                       *,
+                       name: str,
+                       value: Any,
+                       context: NoiseContext) -> Any:
+        del name
+        if isinstance(value, torch.Tensor):
+            cloned = value.clone()
+            if cloned.dtype.is_floating_point:
+                noise = self.sample_like(cloned, context=context)
+                return cloned + noise
+            return cloned
+        if hasattr(value, 'copy'):
+            return value.copy()
+        return deepcopy(value)
+
+    @abstractmethod
+    def sample_like(self,
+                    reference: torch.Tensor,
+                    *,
+                    context: NoiseContext) -> torch.Tensor:
+        """Return an additive noise tensor compatible with `reference`."""
+
+
+class NoAdditiveNoise(AdditiveNoise):
+    """Additive-noise implementation that leaves floating actions unchanged."""
+
+    def sample_like(self,
+                    reference: torch.Tensor,
+                    *,
+                    context: NoiseContext) -> torch.Tensor:
+        del context
+        return torch.zeros_like(reference)
+
+
+class ConstantAdditiveNoise(AdditiveNoise):
+    """Additive Gaussian noise with a constant standard deviation."""
+
+    def __init__(self, std: float) -> None:
+        if std < 0:
+            raise ValueError(f'std must be non-negative, got {std!r}.')
+        self.std = float(std)
+
+    def sample_like(self,
+                    reference: torch.Tensor,
+                    *,
+                    context: NoiseContext) -> torch.Tensor:
+        del context
+        if self.std == 0.0:
+            return torch.zeros_like(reference)
+        return torch.randn_like(reference) * self.std
+
+
+class LinearDecayAdditiveNoise(ConstantAdditiveNoise):
+    """Additive Gaussian noise with linearly decaying standard deviation."""
+
     def __init__(self,
-                 action_dim: int,
-                 max_action: float,
-                 horizon: int,
-                 model: Optional[Any]=None) -> None:
-        if int(horizon) <= 0:
-            raise ValueError(f'horizon must be positive, got {horizon!r}.')
-        self.action_dim = action_dim
-        self.max_action = max_action
-        self.horizon = int(horizon)
+                 start_std: float,
+                 end_std: float,
+                 num_iterations: int) -> None:
+        if start_std < 0:
+            raise ValueError(f'start_std must be non-negative, got {start_std!r}.')
+        if end_std < 0:
+            raise ValueError(f'end_std must be non-negative, got {end_std!r}.')
+        if num_iterations < 1:
+            raise ValueError(
+                f'num_iterations must be a positive integer, got {num_iterations!r}.'
+            )
+        self.start_std = float(start_std)
+        self.end_std = float(end_std)
+        self.num_iterations = int(num_iterations)
+        super().__init__(std=start_std)
+
+    def sample_like(self,
+                    reference: torch.Tensor,
+                    *,
+                    context: NoiseContext) -> torch.Tensor:
+        self.std = self._std_at(context.iteration)
+        return super().sample_like(reference, context=context)
+
+    def _std_at(self, step: Optional[int]) -> float:
+        if step is None:
+            return self.start_std
+        if self.num_iterations == 1:
+            return self.end_std
+        clamped_step = min(max(int(step), 0), self.num_iterations - 1)
+        progress = clamped_step / float(self.num_iterations - 1)
+        return self.start_std + progress * (self.end_std - self.start_std)
+
+
+class _BaseModelBasedAdditiveNoise(ConstantAdditiveNoise):
+    """Shared utilities for model-based additive-noise processes."""
+
+    def __init__(self,
+                 *,
+                 model: Optional[Any]=None,
+                 wrt: Optional[list[str]]=None,
+                 noise_scale: float=1.0) -> None:
+        super().__init__(std=0.0)
+        if noise_scale < 0:
+            raise ValueError(f'noise_scale must be non-negative, got {noise_scale!r}.')
         self.model = model
+        self.wrt = None if wrt is None else list(wrt)
+        self.noise_scale = float(noise_scale)
         self._compiler: Optional[TorchRDDLCompiler] = None
+        self._compiler_model: Optional[Any] = None
 
-    def get_smaller_1(self, start_noise: float, end_noise: float, step: int) -> float:
-        return step * (end_noise - start_noise) / self.horizon + start_noise
+    def sample_like(self,
+                    reference: torch.Tensor,
+                    *,
+                    context: NoiseContext) -> torch.Tensor:
+        std = self._noise_std_from_context(context)
+        self.std = std
+        return super().sample_like(reference, context=context)
 
-    def get_smaller_2(self, start_noise: float, end_noise: float, step: int) -> float:
-        return max((step / self.horizon) * start_noise, end_noise)
+    def _require_subs(self, context: NoiseContext) -> Dict[str, Any]:
+        if context.subs is None:
+            raise ValueError(f'{type(self).__name__} requires context.subs.')
+        return context.subs
 
-    @staticmethod
-    def constant_noise(noise: float=0) -> float:
-        return noise
+    def _get_model(self, context: Optional[NoiseContext]=None) -> Any:
+        model = self.model
+        if model is None and context is not None:
+            model = context.model
+        if model is None:
+            raise ValueError('ModelBasedAdditiveNoise requires a model or context.model.')
+        return model
 
-    def _get_compiler(self) -> TorchRDDLCompiler:
-        if self.model is None:
-            raise ValueError('dynamic_norm_noise requires a model.')
-        if self._compiler is None:
-            self._compiler = TorchRDDLCompiler(self.model, logic=FuzzyLogic())
-            self._compiler.compile()
+    def _get_compiler(self, context: Optional[NoiseContext]=None) -> TorchRDDLCompiler:
+        model = self._get_model(context)
+        if self._compiler is None or self._compiler_model is not model:
+            self._compiler = TorchRDDLCompiler(model)
+            self._compiler.compile(log_expr=False)
+            self._compiler_model = model
         return self._compiler
 
     @staticmethod
@@ -77,12 +225,14 @@ class noise:
 
     def cpf_gradients(self,
                       subs: Dict[str, Any],
-                      wrt: Optional[List[str]]=None,
-                      create_graph: bool=False) -> Dict[str, Dict[str, Optional[torch.Tensor]]]:
+                      wrt: Optional[list[str]]=None,
+                      create_graph: bool=False,
+                      context: Optional[NoiseContext]=None
+                      ) -> Dict[str, Dict[str, Optional[torch.Tensor]]]:
         if not isinstance(subs, dict):
             raise TypeError('subs must be a dict mapping fluent names to values.')
 
-        compiler = self._get_compiler()
+        compiler = self._get_compiler(context)
         local_subs = self._clone_structure(compiler.init_values)
 
         for (name, value) in subs.items():
@@ -145,12 +295,13 @@ class noise:
     def cpf_jacobian(self,
                      cpf_name: str,
                      subs: Dict[str, Any],
-                     wrt: Optional[List[str]]=None,
-                     create_graph: bool=False) -> Dict[str, torch.Tensor]:
+                     wrt: Optional[list[str]]=None,
+                     create_graph: bool=False,
+                     context: Optional[NoiseContext]=None) -> Dict[str, torch.Tensor]:
         if not isinstance(subs, dict):
             raise TypeError('subs must be a dict mapping fluent names to values.')
 
-        compiler = self._get_compiler()
+        compiler = self._get_compiler(context)
         if cpf_name not in compiler.cpfs:
             raise KeyError(f'<{cpf_name}> is not a compiled CPF.')
 
@@ -212,29 +363,32 @@ class noise:
     def cpf_jacobian_norm(self,
                           cpf_name: str,
                           subs: Dict[str, Any],
-                          wrt: Optional[List[str]]=None,
-                          noise_scale: float=1.0,
-                          create_graph: bool=False) -> torch.Tensor:
+                          wrt: Optional[list[str]]=None,
+                          create_graph: bool=False,
+                          context: Optional[NoiseContext]=None) -> torch.Tensor:
         jacobians = self.cpf_jacobian(
             cpf_name=cpf_name,
             subs=subs,
             wrt=wrt,
             create_graph=create_graph,
+            context=context,
         )
         flat_jacobians = [jacobian.reshape(-1) for jacobian in jacobians.values()]
         if not flat_jacobians:
             return torch.tensor(0.0)
-        return torch.linalg.vector_norm(torch.cat(flat_jacobians)) * noise_scale
+        return torch.linalg.vector_norm(torch.cat(flat_jacobians))
 
-    def dynamic_norm_noise(self,
-                           subs: Dict[str, Any],
-                           wrt: Optional[List[str]]=None,
-                           noise_scale: float=1.0,
-                           create_graph: bool=False) -> torch.Tensor:
+    def gradient_norm_noise(self,
+                            subs: Dict[str, Any],
+                            wrt: Optional[list[str]]=None,
+                            noise_scale: Optional[float]=None,
+                            create_graph: bool=False,
+                            context: Optional[NoiseContext]=None) -> torch.Tensor:
         gradients = self.cpf_gradients(
             subs=subs,
             wrt=wrt,
             create_graph=create_graph,
+            context=context,
         )
         flat_grads = [
             grad.reshape(-1)
@@ -244,7 +398,128 @@ class noise:
         ]
         if not flat_grads:
             return torch.tensor(0.0)
-        return torch.linalg.vector_norm(torch.cat(flat_grads)) * noise_scale
+        scale = self.noise_scale if noise_scale is None else float(noise_scale)
+        return torch.linalg.vector_norm(torch.cat(flat_grads)) * scale
 
-    def get_noise(self):
-        return 0
+
+class JacobianBasedAdditiveNoise(_BaseModelBasedAdditiveNoise):
+    """Additive Gaussian noise whose scale is based on a CPF Jacobian norm."""
+
+    def __init__(self,
+                 *,
+                 cpf_name: str,
+                 model: Optional[Any]=None,
+                 wrt: Optional[list[str]]=None,
+                 noise_scale: float=1.0) -> None:
+        if not cpf_name:
+            raise ValueError('cpf_name must be provided for Jacobian-based noise.')
+        super().__init__(
+            model=model,
+            wrt=wrt,
+            noise_scale=noise_scale,
+        )
+        self.cpf_name = cpf_name
+
+    def _noise_std_from_context(self, context: NoiseContext) -> float:
+        value = self.cpf_jacobian_norm(
+            cpf_name=self.cpf_name,
+            subs=self._require_subs(context),
+            wrt=self.wrt,
+            create_graph=False,
+            context=context,
+        )
+        return float((value * self.noise_scale).detach())
+
+
+class GradientNormAdditiveNoise(_BaseModelBasedAdditiveNoise):
+    """Additive Gaussian noise whose scale is based on aggregated CPF gradients."""
+
+    def _noise_std_from_context(self, context: NoiseContext) -> float:
+        value = self.gradient_norm_noise(
+            subs=self._require_subs(context),
+            wrt=self.wrt,
+            noise_scale=self.noise_scale,
+            create_graph=False,
+            context=context,
+        )
+        return float(value.detach())
+
+
+class AdditiveNoiseFactory:
+    """Factory for additive-noise helpers derived from rollout or model metadata."""
+
+    @classmethod
+    def create(cls,
+               *,
+               noise_type: str='constant',
+               std: float=0.0,
+               start_std: Optional[float]=None,
+               end_std: Optional[float]=None,
+               num_iterations: Optional[int]=None,
+               cpf_name: Optional[str]=None,
+               model: Optional[Any]=None,
+               wrt: Optional[list[str]]=None,
+               noise_scale: float=1.0,
+               source: Any) -> AdditiveNoise:
+        normalized_type = noise_type.strip().lower()
+        resolved_model = cls._extract_rddl_model(source) if model is None else model
+
+        if normalized_type == 'constant':
+            if std == 0.0:
+                return NoAdditiveNoise()
+            return ConstantAdditiveNoise(std=std)
+
+        if normalized_type in {'jacobian', 'jacobian_norm', 'model_jacobian'}:
+            return JacobianBasedAdditiveNoise(
+                cpf_name=cls._require_cpf_name(cpf_name),
+                model=resolved_model,
+                wrt=wrt,
+                noise_scale=noise_scale,
+            )
+
+        if normalized_type in {'gradient_norm', 'model_gradient'}:
+            return GradientNormAdditiveNoise(
+                model=resolved_model,
+                wrt=wrt,
+                noise_scale=noise_scale,
+            )
+
+        if normalized_type in {'linear_decay', 'linear-decay', 'decay'}:
+            if start_std is None or end_std is None or num_iterations is None:
+                raise ValueError(
+                    'start_std, end_std, and num_iterations must be provided for '
+                    'linear decay noise.'
+                )
+            if start_std == 0.0 and end_std == 0.0:
+                return NoAdditiveNoise()
+            return LinearDecayAdditiveNoise(
+                start_std=start_std,
+                end_std=end_std,
+                num_iterations=num_iterations,
+            )
+
+        else:
+            raise ValueError(
+                f'Unsupported noise_type={noise_type!r}. '
+                'Supported types are "constant", "linear_decay", "jacobian", '
+                'and "gradient_norm".'
+            )
+
+    @staticmethod
+    def _require_cpf_name(cpf_name: Optional[str]) -> str:
+        if not cpf_name:
+            raise ValueError('cpf_name must be provided for Jacobian-based noise.')
+        return cpf_name
+
+    @staticmethod
+    def _extract_rddl_model(source: Any) -> Any:
+        if hasattr(source, 'variable_types') and hasattr(source, 'action_ranges'):
+            return source
+        if hasattr(source, 'rddl'):
+            return getattr(source, 'rddl')
+        if hasattr(source, 'cell') and hasattr(source.cell, 'rddl'):
+            return source.cell.rddl
+        raise ValueError(
+            'Could not extract RDDL model from source. '
+            'Pass a rollout or model object with an rddl attribute.'
+        )

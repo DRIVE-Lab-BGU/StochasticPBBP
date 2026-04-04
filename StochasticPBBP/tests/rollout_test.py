@@ -21,7 +21,7 @@ print(f"INSTANCE={INSTANCE}")
 from StochasticPBBP.tests.simulator_test import PACKAGE_ROOT
 from core.Logic import ExactLogic  # noqa: E402
 from core.Rollout import TorchRollout  # noqa: E402
-from core.Simulator import TorchRDDLSimulator  # noqa: E402
+from deprecated.Simulator import TorchRDDLSimulator  # noqa: E402
 from utils.Policies import random_policy
 
 

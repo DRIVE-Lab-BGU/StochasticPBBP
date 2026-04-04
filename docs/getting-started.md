@@ -39,7 +39,7 @@ StochasticPBBP/
 │   ├── Logic.py
 │   ├── Policies.py
 │   ├── Rollout.py
-│   ├── Simulator.py
+│   ├── deprecated/Simulator.py
 │   └── Train.py
 ├── problems/
 │   ├── hvac/
@@ -106,7 +106,7 @@ from pathlib import Path
 import pyRDDLGym
 
 from StochasticPBBP.core.Logic import ExactLogic
-from StochasticPBBP.core.Simulator import TorchRDDLSimulator
+from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
 
 root = Path("StochasticPBBP/problems/reservoir")
 env = pyRDDLGym.make(
@@ -132,7 +132,7 @@ print(float(reward), done)
 
 ## When To Use Which Entry Point
 
-- Use `TorchRDDLSimulator` when you want exact step-by-step execution.
+- Use `pyRDDLGym` for evaluation. `TorchRDDLSimulator` is deprecated.
 - Use `TorchRollout` when you want to evaluate or optimize a policy over a full
   horizon.
 - Use `TorchRDDLCompiler` when you need direct access to compiled CPFs and the

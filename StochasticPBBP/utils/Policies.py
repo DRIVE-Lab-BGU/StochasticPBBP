@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 from torch import nn
 
-from StochasticPBBP.core.Simulator import TorchRDDLSimulator
+from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
 
 TensorDict = Dict[str, torch.Tensor]
 
@@ -83,7 +83,7 @@ class StationaryMarkov(nn.Module):
                  observation_template: TensorDict,
                  action_template: TensorDict,
                  hidden_sizes: Tuple[int, ...]=(64, 64),
-                 init_weights_fn: str='kaiming') -> None:
+                 init_weights_fn: str='xavier') -> None:
         super().__init__()
         if not observation_template:
             raise ValueError('observation_template must contain at least one tensor.')
@@ -99,12 +99,12 @@ class StationaryMarkov(nn.Module):
         input_dim = sum(spec['numel'] for spec in self.observation_specs)
         for hidden_size in hidden_sizes:
             layers.append(nn.Linear(input_dim, hidden_size))
-            layers.append(nn.ReLU())
+            layers.append(nn.Tanh())
             input_dim = hidden_size
         output_dim = sum(spec['numel'] for spec in self.action_specs)
         layers.append(nn.Linear(input_dim, output_dim))
         self.network = nn.Sequential(*layers)
-        # Default to Kaiming/JAX-style init because the network uses ReLU hidden layers.
+        # Default to Xavier init because the network uses Tanh hidden layers.
         self._initialize_network(init_weights_fn)
 
     @staticmethod

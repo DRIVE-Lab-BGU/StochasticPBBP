@@ -17,7 +17,7 @@ infrastructure for:
 
 - `StochasticPBBP/core/Compiler.py`: builds Torch callables from a
   `pyRDDLGym` `RDDLLiftedModel`
-- `StochasticPBBP/core/Simulator.py`: exact single-step simulator on top of the
+- `StochasticPBBP/deprecated/Simulator.py`: deprecated exact single-step simulator on top of the
   compiled transition function
 - `StochasticPBBP/core/Rollout.py`: differentiable rollout wrapper that returns
   a `RolloutTrace`

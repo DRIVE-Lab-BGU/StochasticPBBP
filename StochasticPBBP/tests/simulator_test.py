@@ -15,7 +15,7 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 
 from core.Logic import ExactLogic  # noqa: E402
-from core.Simulator import TorchRDDLSimulator  # noqa: E402
+from deprecated.Simulator import TorchRDDLSimulator  # noqa: E402
 from utils.Policies import random_policy
 import pyRDDLGym
 

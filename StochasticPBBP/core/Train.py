@@ -8,6 +8,7 @@ from torch import nn
 
 from StochasticPBBP.core.Logic import FuzzyLogic
 from StochasticPBBP.core.Rollout import TorchRollout
+from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
 from StochasticPBBP.utils.Policies import GaussianPolicy
 
 # from .Logic import FuzzyLogic
@@ -43,14 +44,13 @@ class Train:
                  hidden_sizes: Sequence[int]=(64, 64),
                  seed: int=0,
                  simulator: Optional[Any]=None,
-                 noise_type_dict: Optional[Dict[str, Any]]=None,
+                 additive_noise: Optional[AdditiveNoise]=None,
                  batch_size: Optional[int]=None,
                  batch_num: int=1) -> None:
         self.action_space = action_space
         self.hidden_sizes = tuple(hidden_sizes)
         self.seed = seed
         torch.manual_seed(seed)
-        self.noise_type_dict = deepcopy(noise_type_dict)
 
         self.rollout = TorchRollout(model, horizon=horizon, logic=FuzzyLogic())
         self.rollout.cell.key.manual_seed(seed)
@@ -58,6 +58,7 @@ class Train:
         self.batch_key.manual_seed(seed)
         self.simulator = simulator
         self.rollout.reset()
+        self.default_additive_noise = self._resolve_additive_noise(additive_noise)
         self.default_batch_size = self._resolve_batch_size(batch_size)
         self.default_batch_num = self._validate_batch_num(batch_num)
 
@@ -78,6 +79,16 @@ class Train:
                 f'batch_size={batch_size} cannot be larger than horizon={horizon}.'
             )
         return batch_size
+
+    def _resolve_additive_noise(self,
+                                additive_noise: Optional[AdditiveNoise]) -> AdditiveNoise:
+        if additive_noise is None:
+            return AdditiveNoiseFactory.create(
+                noise_type='constant',
+                std=0.0,
+                source=self.rollout,
+            )
+        return additive_noise
 
     @staticmethod
     def _validate_batch_num(batch_num: int) -> int:
@@ -131,7 +142,8 @@ class Train:
     def _advance_to_batch_start(self,
                                 *,
                                 start_step: int,
-                                noise_type_dict: Optional[Dict[str, Any]]=None
+                                iteration: int,
+                                additive_noise: AdditiveNoise
                                 ) -> Dict[str, Any]:
         if start_step == 0:
             return {
@@ -148,7 +160,8 @@ class Train:
                 policy=self.policy,
                 steps=start_step,
                 start_step=0,
-                noise_type_dict=noise_type_dict,
+                iteration=iteration,
+                additive_noise=additive_noise,
             )
         return {
             'initial_subs': self._detach_structure(prefix_trace.final_subs),
@@ -163,7 +176,8 @@ class Train:
                             policy_state: Any,
                             batch_steps: int,
                             start_step: int,
-                            noise_type_dict: Optional[Dict[str, Any]]=None) -> Dict[str, Any]:
+                            iteration: int,
+                            additive_noise: AdditiveNoise) -> Dict[str, Any]:
         trace = self.rollout(
             policy=self.policy,
             initial_subs=initial_subs,
@@ -171,7 +185,8 @@ class Train:
             policy_state=policy_state,
             steps=batch_steps,
             start_step=start_step,
-            noise_type_dict=noise_type_dict,
+            iteration=iteration,
+            additive_noise=additive_noise,
         )
         objective = self._reduce_objective(trace.return_)
         loss = -objective
@@ -191,7 +206,7 @@ class Train:
                          batch_size: Optional[int]=None,
                          batch_num: Optional[int]=None,
                          batch: Optional[bool]=None,
-                         noise_type_dict: Optional[Dict[str, Any]]=None
+                         additive_noise: Optional[AdditiveNoise]=None
                          ) -> Tuple[List[Dict[str, float]], nn.Module]:
         """Train the policy with sampled horizon batches.
 
@@ -203,8 +218,8 @@ class Train:
             batch_num: Number of partition batches to draw per iteration. Sampling
                 is uniform over the horizon partitions and uses replacement.
             batch: Legacy compatibility argument; ignored.
-            noise_type_dict: Optional action-noise configuration forwarded to the
-                rollout.
+            additive_noise: Action-noise object applied during rollout. Defaults
+                to `NoAdditiveNoise` via the factory.
         """
         del batch
         history: List[Dict[str, float]] = []
@@ -214,9 +229,8 @@ class Train:
         effective_batch_num = self.default_batch_num if batch_num is None else (
             self._validate_batch_num(batch_num)
         )
-        effective_noise_type_dict = (
-            deepcopy(self.noise_type_dict)
-            if noise_type_dict is None else deepcopy(noise_type_dict)
+        effective_additive_noise = self.default_additive_noise if additive_noise is None else (
+            self._resolve_additive_noise(additive_noise)
         )
         partitions = self._build_partitions(effective_batch_size)
 
@@ -234,7 +248,8 @@ class Train:
                 batch_steps = int(partition['steps'])
                 batch_start = self._advance_to_batch_start(
                     start_step=start_step,
-                    noise_type_dict=effective_noise_type_dict,
+                    iteration=iteration,
+                    additive_noise=effective_additive_noise,
                 )
                 self.optimizer.zero_grad(set_to_none=True)
                 result = self._run_training_batch(
@@ -243,7 +258,8 @@ class Train:
                     policy_state=batch_start['policy_state'],
                     batch_steps=batch_steps,
                     start_step=start_step,
-                    noise_type_dict=effective_noise_type_dict,
+                    iteration=iteration,
+                    additive_noise=effective_additive_noise,
                 )
                 trace = result['trace']
 
@@ -296,12 +312,12 @@ class Train:
                     iterations: int=10,
                     print_every: int=1,
                     batch_num: int=1,
-                    noise_type_dict: Optional[Dict[str, Any]]=None
+                    additive_noise: Optional[AdditiveNoise]=None
                     ) -> Tuple[List[Dict[str, float]], nn.Module]:
         return self.train_trajectory(
             iterations=iterations,
             print_every=print_every,
             batch_size=batch_size,
             batch_num=batch_num,
-            noise_type_dict=noise_type_dict,
+            additive_noise=additive_noise,
         )
