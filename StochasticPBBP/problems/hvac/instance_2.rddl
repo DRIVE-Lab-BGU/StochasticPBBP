@@ -1,3 +1,4 @@
+
 non-fluents nf_hvac_1c {
 	domain = hvac;
 	objects {

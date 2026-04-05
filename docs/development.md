@@ -43,7 +43,7 @@ If you want to turn this into a cleaner package, the next engineering steps are:
 
 1. add packaging metadata and a real dependency manifest
 2. promote the smoke tests into an automated test runner
-3. add focused tests for chunked horizon training and state carry-over
+3. add focused tests for horizon batch sampling and partition state replay
 4. add a stable top-level package API with `__init__.py` exports
 5. separate research experiments from public examples
 

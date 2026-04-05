@@ -1,26 +1,38 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 from torch import nn
 
-from .Logic import FuzzyLogic
-from .Policies import GaussianPolicy
-from .Rollout import TorchRollout
+from StochasticPBBP.core.Logic import FuzzyLogic
+from StochasticPBBP.core.Rollout import TorchRollout
+from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
+from StochasticPBBP.utils.Policies import GaussianPolicy
+
+# from .Logic import FuzzyLogic
+# from .Policies import GaussianPolicy
+# from .Rollout import TorchRollout
 
 
 class Train:
-    """Policy optimization with optional horizon chunking.
+    """Policy optimization over contiguous horizon batches.
 
-    If `batch_size > 1`, the rollout horizon is split into `batch_size` equal
-    chunks as evenly as possible. Extra steps from the remainder are assigned to
-    the earliest chunks. The trainer updates parameters after each chunk and
-    continues from the last simulator state of the previous chunk.
+    `batch_size` now means the number of rollout steps used for one gradient
+    update. The rollout horizon is partitioned into contiguous batches of at
+    most `batch_size` steps.
+
+    `batch_num` controls how many batches are sampled per training iteration:
+
+    * `batch_size == horizon`, `batch_num == 1`:
+      one full-horizon batch and one optimizer step per iteration
+    * `batch_size < horizon`:
+      partition the horizon and sample `batch_num` partitions uniformly
+      (with replacement); each sampled partition produces one optimizer step
 
     Example:
-        horizon=113, batch_size=5 -> chunk sizes [23, 23, 23, 22, 22]
+        horizon=113, batch_size=23 -> partition sizes [23, 23, 23, 23, 21]
     """
 
     def __init__(self,
@@ -32,30 +44,57 @@ class Train:
                  hidden_sizes: Sequence[int]=(64, 64),
                  seed: int=0,
                  simulator: Optional[Any]=None,
-                 noise_type_dict: Optional[Dict[str, Any]]=None,
-                 batch_size: int=1) -> None:
+                 additive_noise: Optional[AdditiveNoise]=None,
+                 batch_size: Optional[int]=None,
+                 batch_num: int=1) -> None:
         self.action_space = action_space
         self.hidden_sizes = tuple(hidden_sizes)
-        self.default_batch_size = self._validate_batch_size(batch_size)
         self.seed = seed
         torch.manual_seed(seed)
-        self.noise_type_dict = deepcopy(noise_type_dict)
 
         self.rollout = TorchRollout(model, horizon=horizon, logic=FuzzyLogic())
         self.rollout.cell.key.manual_seed(seed)
+        self.batch_key = torch.Generator()
+        self.batch_key.manual_seed(seed)
         self.simulator = simulator
         self.rollout.reset()
+        self.default_additive_noise = self._resolve_additive_noise(additive_noise)
+        self.default_batch_size = self._resolve_batch_size(batch_size)
+        self.default_batch_num = self._validate_batch_num(batch_num)
 
         if policy is None:
             policy = GaussianPolicy(action_template=self.rollout.noop_actions)
         self.policy = policy
         self.optimizer = torch.optim.RMSprop(self.policy.parameters(), lr=lr)
 
-    @staticmethod
-    def _validate_batch_size(batch_size: int) -> int:
+    def _resolve_batch_size(self, batch_size: Optional[int]) -> int:
+        # Default to one full-horizon batch per iteration.
+        if batch_size is None:
+            return int(self.rollout.horizon)
         if not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError(f'batch_size must be a positive integer, got {batch_size!r}.')
+        horizon = int(self.rollout.horizon)
+        if batch_size > horizon:
+            raise ValueError(
+                f'batch_size={batch_size} cannot be larger than horizon={horizon}.'
+            )
         return batch_size
+
+    def _resolve_additive_noise(self,
+                                additive_noise: Optional[AdditiveNoise]) -> AdditiveNoise:
+        if additive_noise is None:
+            return AdditiveNoiseFactory.create(
+                noise_type='constant',
+                std=0.0,
+                source=self.rollout,
+            )
+        return additive_noise
+
+    @staticmethod
+    def _validate_batch_num(batch_num: int) -> int:
+        if not isinstance(batch_num, int) or batch_num < 1:
+            raise ValueError(f'batch_num must be a positive integer, got {batch_num!r}.')
+        return batch_num
 
     @staticmethod
     def _reduce_objective(objective: torch.Tensor) -> torch.Tensor:
@@ -73,40 +112,81 @@ class Train:
             return tuple(cls._detach_structure(v) for v in value)
         return deepcopy(value)
 
-    def _build_chunk_sizes(self, batch_size: int) -> List[int]:
+    def _build_partitions(self, batch_size: int) -> List[Dict[str, int]]:
         horizon = int(self.rollout.horizon)
-        if batch_size == 1:
-            return [horizon]
-        if batch_size > horizon:
-            raise ValueError(
-                f'batch_size={batch_size} cannot be larger than horizon={horizon} '
-                'for chunked training.'
+        partitions: List[Dict[str, int]] = []
+        start_step = 0
+        while start_step < horizon:
+            steps = min(batch_size, horizon - start_step)
+            partitions.append({
+                'start_step': start_step,
+                'steps': steps,
+            })
+            start_step += steps
+        return partitions
+
+    def _sample_partition_indices(self,
+                                  *,
+                                  num_partitions: int,
+                                  batch_num: int) -> List[int]:
+        if num_partitions == 1:
+            return [0] * batch_num
+        draws = torch.randint(
+            low=0,
+            high=num_partitions,
+            size=(batch_num,),
+            generator=self.batch_key,
+        )
+        return [int(index) for index in draws.tolist()]
+
+    def _advance_to_batch_start(self,
+                                *,
+                                start_step: int,
+                                iteration: int,
+                                additive_noise: AdditiveNoise
+                                ) -> Dict[str, Any]:
+        if start_step == 0:
+            return {
+                'initial_subs': None,
+                'model_params': None,
+                'policy_state': None,
+            }
+
+        # Each sampled batch is anchored at a partition of a fresh horizon rollout.
+        # We replay the prefix without gradients to recover the simulator state at
+        # the sampled batch start under the current policy.
+        with torch.no_grad():
+            prefix_trace = self.rollout(
+                policy=self.policy,
+                steps=start_step,
+                start_step=0,
+                iteration=iteration,
+                additive_noise=additive_noise,
             )
+        return {
+            'initial_subs': self._detach_structure(prefix_trace.final_subs),
+            'model_params': self._detach_structure(prefix_trace.model_params),
+            'policy_state': self._detach_structure(prefix_trace.policy_state),
+        }
 
-        base_chunk = horizon // batch_size
-        remainder = horizon % batch_size
-        chunk_sizes = [base_chunk] * batch_size
-        if remainder:
-            for i in range(remainder):
-                chunk_sizes[i] += 1
-        return chunk_sizes
-
-    def _run_training_chunk(self,
-                            *, # enforce keyword arguments for clarity
+    def _run_training_batch(self,
+                            *,  # enforce keyword arguments for clarity
                             initial_subs: Optional[Dict[str, Any]],
                             model_params: Optional[Dict[str, Any]],
                             policy_state: Any,
-                            chunk_steps: int,
+                            batch_steps: int,
                             start_step: int,
-                            noise_type_dict: Optional[Dict[str, Any]]=None) -> Dict[str, Any]:
+                            iteration: int,
+                            additive_noise: AdditiveNoise) -> Dict[str, Any]:
         trace = self.rollout(
             policy=self.policy,
             initial_subs=initial_subs,
             model_params=model_params,
             policy_state=policy_state,
-            steps=chunk_steps,
+            steps=batch_steps,
             start_step=start_step,
-            noise_type_dict=noise_type_dict,
+            iteration=iteration,
+            additive_noise=additive_noise,
         )
         objective = self._reduce_objective(trace.return_)
         loss = -objective
@@ -124,58 +204,86 @@ class Train:
                          iterations: int=10,
                          print_every: int=1,
                          batch_size: Optional[int]=None,
+                         batch_num: Optional[int]=None,
                          batch: Optional[bool]=None,
-                         noise_type_dict: Optional[Dict[str, Any]]=None) -> List[Dict[str, float]]:
+                         additive_noise: Optional[AdditiveNoise]=None
+                         ) -> Tuple[List[Dict[str, float]], nn.Module]:
+        """Train the policy with sampled horizon batches.
+
+        Args:
+            iterations: Number of outer training iterations.
+            print_every: Print metrics on iteration 1 and then every N iterations.
+            batch_size: Number of rollout steps in one training batch. If omitted,
+                defaults to the full horizon, which gives one full-horizon batch.
+            batch_num: Number of partition batches to draw per iteration. Sampling
+                is uniform over the horizon partitions and uses replacement.
+            batch: Legacy compatibility argument; ignored.
+            additive_noise: Action-noise object applied during rollout. Defaults
+                to `NoAdditiveNoise` via the factory.
+        """
         del batch
         history: List[Dict[str, float]] = []
         effective_batch_size = self.default_batch_size if batch_size is None else (
-            self._validate_batch_size(batch_size)
+            self._resolve_batch_size(batch_size)
         )
-        effective_noise_type_dict = (
-            deepcopy(self.noise_type_dict)
-            if noise_type_dict is None else deepcopy(noise_type_dict)
+        effective_batch_num = self.default_batch_num if batch_num is None else (
+            self._validate_batch_num(batch_num)
         )
-        chunk_sizes = self._build_chunk_sizes(effective_batch_size)
+        effective_additive_noise = self.default_additive_noise if additive_noise is None else (
+            self._resolve_additive_noise(additive_noise)
+        )
+        partitions = self._build_partitions(effective_batch_size)
 
         self.policy.train()
 
         for iteration in range(1, iterations + 1):
-            current_subs: Optional[Dict[str, Any]] = None
-            current_model_params: Optional[Dict[str, Any]] = None
-            current_policy_state: Any = None
-            # start_step is used for display purposes and passed to the rollout for potential use in time-based policies.
-            start_step = 0
+            sampled_indices = self._sample_partition_indices(
+                num_partitions=len(partitions),
+                batch_num=effective_batch_num,
+            )
 
-            for chunk_index, chunk_steps in enumerate(chunk_sizes, start=1):
-                self.optimizer.zero_grad(set_to_none=True)
-                result = self._run_training_chunk(
-                    initial_subs=current_subs,
-                    model_params=current_model_params,
-                    policy_state=current_policy_state,
-                    chunk_steps=chunk_steps,
+            for batch_index, partition_index in enumerate(sampled_indices, start=1):
+                partition = partitions[partition_index]
+                start_step = int(partition['start_step'])
+                batch_steps = int(partition['steps'])
+                batch_start = self._advance_to_batch_start(
                     start_step=start_step,
-                    noise_type_dict=effective_noise_type_dict,
+                    iteration=iteration,
+                    additive_noise=effective_additive_noise,
+                )
+                self.optimizer.zero_grad(set_to_none=True)
+                result = self._run_training_batch(
+                    initial_subs=batch_start['initial_subs'],
+                    model_params=batch_start['model_params'],
+                    policy_state=batch_start['policy_state'],
+                    batch_steps=batch_steps,
+                    start_step=start_step,
+                    iteration=iteration,
+                    additive_noise=effective_additive_noise,
                 )
                 trace = result['trace']
 
-                current_subs = self._detach_structure(trace.final_subs)
-                current_model_params = self._detach_structure(trace.model_params)
-                current_policy_state = self._detach_structure(trace.policy_state)
                 end_step = start_step + len(trace.rewards)
                 display_step_start = start_step + 1 if len(trace.rewards) > 0 else start_step
                 display_step_end = end_step
 
                 metrics = {
                     'iteration': float(iteration),
-                    'chunk_index': float(chunk_index),
-                    'num_chunks': float(len(chunk_sizes)),
-                    'chunk_steps': float(chunk_steps),
+                    'batch_index': float(batch_index),
+                    'batch_num': float(effective_batch_num),
+                    'partition_index': float(partition_index + 1),
+                    'num_partitions': float(len(partitions)),
+                    'batch_steps': float(batch_steps),
                     'step_start': float(display_step_start),
                     'step_end': float(display_step_end),
                     'return': float(result['objective'].detach()),
                     'loss': float(result['loss'].detach()),
                     'steps': float(len(trace.rewards)),
-                    'final_subs': current_subs,
+                    'final_subs': self._detach_structure(trace.final_subs),
+                    # Legacy aliases kept for downstream scripts that still read chunk fields.
+                    'chunk_index': float(batch_index),
+                    'num_chunks': float(effective_batch_num),
+                    'chunk_steps': float(batch_steps),
                 }
                 history.append(metrics)
 
@@ -184,14 +292,13 @@ class Train:
                 ):
                     print(
                         f"iter={iteration:4d} "
-                        f"chunk={chunk_index:2d}/{len(chunk_sizes):2d} "
+                        f"batch={batch_index:2d}/{effective_batch_num:2d} "
+                        f"partition={partition_index + 1:2d}/{len(partitions):2d} "
                         f"range=[{display_step_start:3.0f},{display_step_end:3.0f}] "
                         f"return={metrics['return']:10.4f} "
                         f"loss={metrics['loss']:10.4f} "
                         f"steps={int(metrics['steps'])}"
                     )
-
-                start_step = end_step
 
         if isinstance(self.policy, GaussianPolicy):
             dist = self.policy.distribution()
@@ -204,10 +311,13 @@ class Train:
                     batch_size: int,
                     iterations: int=10,
                     print_every: int=1,
-                    noise_type_dict: Optional[Dict[str, Any]]=None) -> List[Dict[str, float]]:
+                    batch_num: int=1,
+                    additive_noise: Optional[AdditiveNoise]=None
+                    ) -> Tuple[List[Dict[str, float]], nn.Module]:
         return self.train_trajectory(
             iterations=iterations,
             print_every=print_every,
             batch_size=batch_size,
-            noise_type_dict=noise_type_dict,
+            batch_num=batch_num,
+            additive_noise=additive_noise,
         )

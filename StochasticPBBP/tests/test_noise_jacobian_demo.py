@@ -12,7 +12,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from core.Noise import noise  # noqa: E402
+from utils.Noise import noise  # noqa: E402
 
 
 DOMAIN = PACKAGE_ROOT / "problems" / "reservoir" / "domain.rddl"

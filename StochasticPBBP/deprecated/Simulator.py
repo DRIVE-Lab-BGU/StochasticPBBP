@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-from .Noise import noise
+from StochasticPBBP.deprecated.Noise import noise
 
 from ast import Return
 import time
@@ -22,7 +22,8 @@ from pyRDDLGym.core.debug.exception import (
 from pyRDDLGym.core.debug.logger import Logger
 from pyRDDLGym.core.parser.expr import Value
 from pyRDDLGym.core.simulator import RDDLSimulator
-from .Compiler import TorchRDDLCompiler
+from StochasticPBBP.core.Compiler import TorchRDDLCompiler
+# from .Compiler import TorchRDDLCompiler
 
 Args = Dict[str, Union[np.ndarray, torch.Tensor, Value, float, int, bool]]
 

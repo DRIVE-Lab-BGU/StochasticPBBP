@@ -18,7 +18,7 @@ TorchRDDLCompiler
         +--> compiled invariants / preconditions / terminations
         |
         v
-TorchRDDLSimulator or TorchRollout
+TorchRollout
         |
         v
 policy evaluation / optimization in Torch
@@ -84,14 +84,10 @@ This is what makes it possible to optimize policies through a rollout in
 
 ## Simulator vs Rollout
 
-### `TorchRDDLSimulator`
+### `TorchRDDLSimulator` (Deprecated)
 
-Use the simulator when:
-
-- you want explicit step-by-step control
-- you care about exact environment execution
-- you want optional action noise during stepping
-- you want grounded observation dictionaries similar to `pyRDDLGym`
+This module is deprecated and retained only for migration/reference. For
+evaluation and exact stepping, use `pyRDDLGym` directly.
 
 ### `TorchRollout`
 
@@ -104,33 +100,34 @@ Use the rollout wrapper when:
 The rollout wrapper delegates single-step dynamics to `TorchRolloutCell`, which
 internally uses the same compiler transition function as the simulator.
 
-## Chunked Training
+## Batch Training
 
-`Train` now performs chunked optimization over the rollout horizon.
+`Train` now performs batch sampling over the rollout horizon.
 
-If `batch_size > 1`:
+With the current API:
 
-- the horizon is split into nearly equal chunks
-- the policy is updated after each chunk
-- the next chunk starts from the previous chunk's `final_subs`
-- `model_params` and `policy_state` are carried over as well
+- `batch_size` is the number of rollout steps per optimizer update
+- the horizon is partitioned into contiguous batches of at most `batch_size`
+- `batch_num` controls how many partitions are sampled per training iteration
+- each sampled partition produces one policy update
 
 This is implemented by:
 
+- replaying a no-grad prefix when a sampled batch starts after step 0
 - running `TorchRollout.forward(..., initial_subs=..., steps=..., start_step=...)`
-- taking `trace.final_subs`
-- feeding that state back as the next chunk's `initial_subs`
+  for the sampled batch
+- updating the policy from that batch return only
 
 Example:
 
-- `horizon=113`, `batch_size=5` -> `[23, 23, 23, 22, 22]`
+- `horizon=113`, `batch_size=23`, `batch_num=5` -> `[23, 23, 23, 23, 21]`
 
 ## Action Handling
 
 There is one important API difference between the two execution layers:
 
 - `TorchRDDLSimulator` can accept either lifted or grounded actions because it
-  can fall back to `pyRDDLGym` action preparation
+  can fall back to `pyRDDLGym` action preparation, but this path is deprecated
 - `TorchRollout` expects lifted action names and validates them against
   `noop_actions`
 

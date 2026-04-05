@@ -17,10 +17,11 @@ print(f"PACKAGE_ROOT={PACKAGE_ROOT}")
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from core.Policies import TensorDict
 from core.Rollout import TorchRollout
 from core.Train import Train
 from core.Logic import FuzzyLogic
+from utils.Noise import AdditiveNoiseFactory
+from utils.Policies import TensorDict
 
 class state2action(nn.Module):
     def __init__(self,
@@ -177,7 +178,7 @@ def main() -> None:
     horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "400"))
     hidden_sizes = (12, 12)
     iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "200"))
-    num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "20"))
+    num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "2"))
     seed_offset = int(os.environ.get("NOISE_PLOT_SEED_OFFSET", "112"))
     batched_batch_size = int(os.environ.get("NOISE_PLOT_BATCH_SIZE", "10"))
     seeds = [seed_offset + 2*index for index in range(num_seeds)]
@@ -284,13 +285,18 @@ def main() -> None:
                 hidden_sizes=hidden_sizes,
                 batch_size=batch_size,
                 seed=seed,
-                noise_type_dict={'type': 'constant', 'value': noise_value},
+                additive_noise=AdditiveNoiseFactory.create(
+                    noise_type='constant',
+                    std=noise_value,
+                    source=template_rollout,
+                ),
             )
 
             history, trained_policy = trainer.train_trajectory(
                 iterations=iterations,
                 print_every=0,
                 batch_size=batch_size,
+                additive_noise=trainer.default_additive_noise,
             )
             del trained_policy
 
@@ -417,7 +423,7 @@ def main() -> None:
     results_no_noise_no_batch = run_experiment(
         noise_value=0.0,
         label='torch | no noise | batch=1',
-        batch_size=1,
+        batch_size=400,
     )
     end = time.perf_counter()
     elapsed = end - start
@@ -433,7 +439,7 @@ def main() -> None:
     results_with_noise_no_batch = run_experiment(
         noise_value=3.0,
         label='torch | noise=3.0 | batch=1',
-        batch_size=1,
+        batch_size=400,
     )
     end = time.perf_counter()
     elapsed = end - start

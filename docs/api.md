@@ -38,9 +38,9 @@ Important attributes after `compile()`:
 - `preconditions`, `invariants`, `terminations`
 - `model_params`: mutable parameters used by some relaxed operators
 
-## `TorchRDDLSimulator`
+## `TorchRDDLSimulator` (Deprecated)
 
-Location: `StochasticPBBP/core/Simulator.py`
+Location: `StochasticPBBP/deprecated/Simulator.py`
 
 Purpose:
 
@@ -56,7 +56,7 @@ from pathlib import Path
 import pyRDDLGym
 
 from StochasticPBBP.core.Logic import ExactLogic
-from StochasticPBBP.core.Simulator import TorchRDDLSimulator
+from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
 
 root = Path("StochasticPBBP/problems/reservoir")
 env = pyRDDLGym.make(
@@ -209,7 +209,7 @@ The training code is now split across three files:
 
 - `StochasticPBBP/core/Policies.py`: simple random / neural helpers plus
   `GaussianPolicy`
-- `StochasticPBBP/core/Train.py`: chunked horizon training loop
+- `StochasticPBBP/core/Train.py`: horizon batch sampling training loop
 - `StochasticPBBP/Runs.py`: runnable CLI entrypoint
 
 ### `GaussianPolicy`
@@ -222,17 +222,19 @@ vector. It now lives in `core/Policies.py`.
 `Train` wraps a `TorchRollout` and optimizes policy parameters with
 `torch.optim.RMSprop`.
 
-Important behavior when `batch_size > 1`:
+Important batching behavior:
 
-- the horizon is split into `batch_size` nearly equal chunks
-- extra steps from the remainder are distributed to the earliest chunks
-- the optimizer updates after each chunk
-- the next chunk starts from the previous chunk's `final_subs`
-- `model_params` and `policy_state` are also carried forward
+- `batch_size` is the number of rollout steps used for one optimizer update
+- the horizon is partitioned into contiguous batches of at most `batch_size`
+- `batch_num` is the number of partitions sampled per training iteration
+- each sampled batch produces one optimizer step
+- if a sampled batch starts after step 0, the trainer replays the prefix to
+  recover the simulator state at that partition start
 
 Example:
 
-- `horizon=113`, `batch_size=5` -> chunk sizes `[23, 23, 23, 22, 22]`
+- `horizon=113`, `batch_size=113`, `batch_num=1` -> one full-horizon batch
+- `horizon=113`, `batch_size=23`, `batch_num=5` -> partition sizes `[23, 23, 23, 23, 21]`
 
 Typical usage:
 
@@ -241,8 +243,8 @@ from pathlib import Path
 
 import pyRDDLGym
 
-from StochasticPBBP.core.Policies import GaussianPolicy
-from StochasticPBBP.core.Simulator import TorchRDDLSimulator
+from StochasticPBBP.utils.Policies import GaussianPolicy
+from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
 from StochasticPBBP.core.Train import Train
 
 root = Path("StochasticPBBP/problems/reservoir")
@@ -258,7 +260,8 @@ trainer = Train(
     model=env.model,
     policy=policy,
     horizon=113,
-    batch_size=5,
+    batch_size=23,
+    batch_num=5,
 )
 
 history = trainer.train_trajectory(iterations=1, print_every=1)

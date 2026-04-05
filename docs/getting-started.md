@@ -39,7 +39,7 @@ StochasticPBBP/
 │   ├── Logic.py
 │   ├── Policies.py
 │   ├── Rollout.py
-│   ├── Simulator.py
+│   ├── deprecated/Simulator.py
 │   └── Train.py
 ├── problems/
 │   ├── hvac/
@@ -57,10 +57,10 @@ Training example:
 python StochasticPBBP/Runs.py --iterations 5 --print-every 1
 ```
 
-Chunked horizon training example:
+Partitioned horizon training example:
 
 ```bash
-python StochasticPBBP/Runs.py --iterations 1 --horizon 113 --batch-size 5 --print-every 1
+python StochasticPBBP/Runs.py --iterations 1 --horizon 113 --batch-size 23 --batch-num 5 --print-every 1
 ```
 
 What this does:
@@ -68,13 +68,14 @@ What this does:
 - loads the default reservoir domain unless you pass `--domain` and `--instance`
 - initializes `GaussianPolicy` from `core/Policies.py`
 - trains through `Train` from `core/Train.py`
-- if `batch_size > 1`, splits the horizon into nearly equal chunks
-- updates parameters after each chunk
-- resumes the next chunk from the previous chunk's final simulator state
+- `batch_size` is the number of rollout steps used for one optimizer update
+- the horizon is partitioned into contiguous batches of at most `batch_size`
+- `batch_num` controls how many partitions are sampled per training iteration
 
-Chunking example:
+Partition example:
 
-- `horizon=113`, `batch_size=5` -> `[23, 23, 23, 22, 22]`
+- `horizon=113`, `batch_size=113`, `batch_num=1` -> one full-horizon batch
+- `horizon=113`, `batch_size=23`, `batch_num=5` -> `[23, 23, 23, 23, 21]`
 
 Useful CLI arguments:
 
@@ -105,7 +106,7 @@ from pathlib import Path
 import pyRDDLGym
 
 from StochasticPBBP.core.Logic import ExactLogic
-from StochasticPBBP.core.Simulator import TorchRDDLSimulator
+from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
 
 root = Path("StochasticPBBP/problems/reservoir")
 env = pyRDDLGym.make(
@@ -131,10 +132,9 @@ print(float(reward), done)
 
 ## When To Use Which Entry Point
 
-- Use `TorchRDDLSimulator` when you want exact step-by-step execution.
+- Use `pyRDDLGym` for evaluation. `TorchRDDLSimulator` is deprecated.
 - Use `TorchRollout` when you want to evaluate or optimize a policy over a full
   horizon.
 - Use `TorchRDDLCompiler` when you need direct access to compiled CPFs and the
   transition function.
-- Use `Train` when you want chunked training with optimizer updates between
-  horizon segments.
+- Use `Train` when you want sampled batch updates over horizon partitions.

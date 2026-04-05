@@ -12,8 +12,9 @@ from torch import nn
 
 from pyRDDLGym.core.compiler.model import RDDLLiftedModel
 from pyRDDLGym.core.debug.logger import Logger
-from .Compiler import TorchRDDLCompiler
-from .Noise import noise
+from StochasticPBBP.core.Compiler import TorchRDDLCompiler
+from StochasticPBBP.utils.Noise import AdditiveNoise, NoiseContext, NoAdditiveNoise
+
 TensorDict = Dict[str, torch.Tensor]
 PolicyOutput = Union[TensorDict, Tuple[TensorDict, Any]]
 PolicyFn = Callable[..., PolicyOutput]
@@ -76,7 +77,7 @@ class TorchRolloutCell(nn.Module):
         self.compiler = compiled
         self.step_fn = compiled.compile_transition(cache_path_info=False)
         self.init_values = self._clone_structure(compiled.init_values)
-        # paramter for logic
+        # parameters for logic
         self.model_params = self._clone_structure(compiled.model_params)
         self.observed_fluents = tuple(
             rddl_model.observ_fluents if rddl_model.observ_fluents else rddl_model.state_fluents
@@ -136,18 +137,14 @@ class TorchRolloutCell(nn.Module):
     def step(self,
              subs: Dict[str, Any],
              actions: Optional[Dict[str, Any]]=None,
-             model_params: Optional[Dict[str, Any]]=None , 
-             noise_type_dict: Optional[Dict[str, Any]]=None
+             model_params: Optional[Dict[str, Any]]=None
              ) -> Tuple[Dict[str, Any], TensorDict, torch.Tensor, bool, Dict[str, Any]]:
         """Run one transition starting from an explicit hidden state."""
         local_subs = self._clone_structure(subs)
         local_model_params = self._clone_structure(
             self.model_params if model_params is None else model_params
         )
-        prepared_actions = self.prepare_step_actions(
-            actions=actions,
-            noise_type_dict=noise_type_dict,
-        )
+        prepared_actions = self.prepare_actions(actions)
 
         next_subs, log, next_model_params = self.step_fn(
             self.key, prepared_actions, local_subs, local_model_params
@@ -156,15 +153,6 @@ class TorchRolloutCell(nn.Module):
         done = self._to_bool(log.get('termination', False))
         next_obs = self.observe(next_subs)
         return next_subs, next_obs, reward, done, next_model_params
-
-    def prepare_step_actions(self,
-                             actions: Optional[Dict[str, Any]]=None,
-                             noise_type_dict: Optional[Dict[str, Any]]=None
-                             ) -> Dict[str, Any]:
-        prepared_actions = self.prepare_actions(actions)
-        if noise_type_dict is None:
-            return prepared_actions
-        return self._apply_action_noise(prepared_actions, noise_type_dict)
 
     def prepare_actions(self, actions: Optional[Dict[str, Any]]=None) -> Dict[str, Any]:
         """ This method prepares the actions to be passed to the step function.
@@ -186,68 +174,6 @@ class TorchRolloutCell(nn.Module):
                 )
             prepared[name] = self._coerce_like(value, prepared[name], name)
         return prepared
-
-    def _apply_action_noise(self,
-                            actions: Dict[str, Any],
-                            noise_type_dict: Dict[str, Any]) -> Dict[str, Any]:
-        noise_generator = noise(
-            horizon=self.horizon,
-            action_dim=len(self.noop_actions),
-            max_action=1.0,
-            model=self.rddl,
-        )
-        noise_kind = noise_type_dict.get('type')
-        if noise_kind == 'constant':
-            noise_value = noise_generator.constant_noise(
-                noise=noise_type_dict.get('value', 0),
-            )
-        elif noise_kind in {'get_smaller_1', 'smaller_1'}:
-            noise_value = noise_generator.get_smaller_1(
-                start_noise=noise_type_dict.get('start_value', 1.0),
-                end_noise=noise_type_dict.get('end_value', 0.0),
-                step=noise_type_dict.get('step', 0),
-            )
-        elif noise_kind in {'get_smaller_2', 'smaller_2'}:
-            noise_value = noise_generator.get_smaller_2(
-                start_noise=noise_type_dict.get('start_value', 1.0),
-                end_noise=noise_type_dict.get('end_value', 0.0),
-                step=noise_type_dict.get('step', 0),
-            )
-        else:
-            raise ValueError(f'Unsupported noise type: {noise_kind!r}.')
-
-        noised_actions: Dict[str, Any] = {}
-        for (name, value) in actions.items():
-            noised_actions[name] = self._add_noise_to_value(value, noise_value)
-        return noised_actions
-
-    @classmethod
-    def _add_noise_to_value(cls, value: Any, noise_value: Any) -> Any:
-        if isinstance(value, torch.Tensor):
-            if value.dtype == torch.bool or not value.dtype.is_floating_point:
-                return value.clone()
-            noise_tensor = noise_value
-            if not isinstance(noise_tensor, torch.Tensor):
-                noise_tensor = torch.as_tensor(
-                    noise_tensor,
-                    dtype=value.dtype,
-                    device=value.device,
-                )
-            noise_tensor = noise_tensor.to(dtype=value.dtype, device=value.device)
-            if noise_tensor.ndim == 0:
-                noise_tensor = torch.full_like(value, noise_tensor)
-            else:
-                noise_tensor = torch.broadcast_to(noise_tensor, value.shape)
-            if torch.any(noise_tensor < 0):
-                raise ValueError('Noise standard deviation must be non-negative.')
-            if torch.all(noise_tensor == 0):
-                return value + torch.zeros_like(value)
-            distribution = torch.distributions.Normal(
-                loc=torch.zeros_like(value),
-                scale=noise_tensor,
-            )
-            return value + distribution.rsample()
-        return cls._clone_value(value)
 
     def _coerce_obs_value(self, value: Any, name: str) -> torch.Tensor:
         del name
@@ -357,14 +283,12 @@ class TorchRollout(nn.Module):
     def step(self,
              subs: Dict[str, Any],
              actions: Optional[Dict[str, Any]]=None,
-             model_params: Optional[Dict[str, Any]]=None,
-             noise_type_dict: Optional[Dict[str, Any]]=None
+             model_params: Optional[Dict[str, Any]]=None
              ) -> Tuple[Dict[str, Any], TensorDict, torch.Tensor, bool, Dict[str, Any]]:
         return self.cell.step(
             subs=subs,
             actions=actions,
             model_params=model_params,
-            noise_type_dict=noise_type_dict,
         )
 
     def forward(self,
@@ -375,7 +299,8 @@ class TorchRollout(nn.Module):
                 policy_state: Any=None,
                 steps: Optional[int]=None,
                 start_step: int=0,
-                noise_type_dict: Optional[Dict[str, Any]]=None) -> RolloutTrace:
+                iteration: Optional[int]=None,
+                additive_noise: Optional[AdditiveNoise]=None) -> RolloutTrace:
         # in the rest in the cell is check if exist a subs and if not it will create a new one using the reset function, so we can start with subs = None and let the cell handle it.
         subs, observation, local_model_params = self.reset(
             initial_state=initial_state,
@@ -391,6 +316,7 @@ class TorchRollout(nn.Module):
         rollout_steps = self.horizon if steps is None else steps
         if rollout_steps < 0:
             raise ValueError(f'steps must be non-negative, got {rollout_steps}.')
+        active_noise = NoAdditiveNoise() if additive_noise is None else additive_noise
 
         for local_step in range(rollout_steps):
             step = start_step + local_step
@@ -398,13 +324,24 @@ class TorchRollout(nn.Module):
             raw_action, policy_state = self._call_policy(
                 policy, observation, step, policy_state
             )
-            step_noise = self._build_step_noise_config(noise_type_dict, step)
-            actions = self.cell.prepare_step_actions(raw_action, step_noise)
+            prepared_actions = self.cell.prepare_actions(raw_action)
+            noise_context = NoiseContext(
+                step=step,
+                iteration=iteration,
+                subs=self.cell._clone_structure(subs),
+                observation={
+                    name: value.clone() if isinstance(value, torch.Tensor) else deepcopy(value)
+                    for (name, value) in observation.items()
+                },
+                model=self.rddl,
+                model_params=self.cell._clone_structure(local_model_params),
+                policy_state=self.cell._clone_structure(policy_state),
+            )
+            actions = active_noise(prepared_actions, context=noise_context)
             subs, observation, reward, done, local_model_params = self.step(
                 subs=subs,
                 actions=actions,
                 model_params=local_model_params,
-                noise_type_dict=None,
             )
             actions_log.append(actions)
             rewards.append(reward)
@@ -477,12 +414,3 @@ class TorchRollout(nn.Module):
             actions, next_policy_state = output
             return actions, next_policy_state
         return output, policy_state
-
-    @staticmethod
-    def _build_step_noise_config(noise_type_dict: Optional[Dict[str, Any]],
-                                 step: int) -> Optional[Dict[str, Any]]:
-        if noise_type_dict is None:
-            return None
-        step_noise = dict(noise_type_dict)
-        step_noise.setdefault('step', step)
-        return step_noise

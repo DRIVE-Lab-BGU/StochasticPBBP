@@ -5,8 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import torch
 
-from .Compiler import TorchRDDLCompiler
-from .Logic import FuzzyLogic
+from StochasticPBBP.core.Compiler import FuzzyLogic, TorchRDDLCompiler
 
 
 class noise:
@@ -28,7 +27,6 @@ class noise:
 
     def get_smaller_2(self, start_noise: float, end_noise: float, step: int) -> float:
         return max((step / self.horizon) * start_noise, end_noise)
-
 
     @staticmethod
     def constant_noise(noise: float=0) -> float:

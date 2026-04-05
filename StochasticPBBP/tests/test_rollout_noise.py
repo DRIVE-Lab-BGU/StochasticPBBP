@@ -14,8 +14,12 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 from core.Logic import ExactLogic  # noqa: E402
 from core.Rollout import TorchRollout, TorchRolloutCell  # noqa: E402
-from core.Noise import noise  # noqa: E402
-from core.Simulator import TorchRDDLSimulator  # noqa: E402
+from utils.Noise import (  # noqa: E402
+    ConstantAdditiveNoise,
+    JacobianBasedAdditiveNoise,
+    LinearDecayAdditiveNoise,
+    NoiseContext,
+)
 DOMAIN = PACKAGE_ROOT / "problems" / "reservoir" / "domain.rddl"
 INSTANCE = PACKAGE_ROOT / "problems" / "reservoir" / "instance_1.rddl"
 
@@ -62,9 +66,8 @@ class RolloutNoiseTest(unittest.TestCase):
         torch.manual_seed(1234)
         rollout.step(
             subs=subs,
-            actions=original_action,
+            actions=ConstantAdditiveNoise(std=noise_std)(original_action, context=NoiseContext()),
             model_params=model_params,
-            noise_type_dict={'type': 'constant', 'value': noise_std},
         )
 
         self.assertEqual(len(captured_actions), 1)
@@ -82,7 +85,7 @@ class RolloutNoiseTest(unittest.TestCase):
             )
         )
 
-    def test_forward_uses_step_index_for_get_smaller_1_noise(self) -> None:
+    def test_forward_uses_training_iteration_for_linear_decay_noise(self) -> None:
         rollout = TorchRollout(self.model, horizon=3, logic=ExactLogic())
         captured_actions = self._install_capture_step_fn(rollout)
 
@@ -90,15 +93,20 @@ class RolloutNoiseTest(unittest.TestCase):
             del observation, step
             return {'release': torch.zeros_like(rollout.noop_actions['release'])}
 
-        expected_stds = [1.0, 2.0 / 3.0, 1.0 / 3.0]
+        expected_std = 0.5
         base = torch.zeros_like(rollout.noop_actions['release'])
+        additive_noise = LinearDecayAdditiveNoise(
+            start_std=1.0,
+            end_std=0.0,
+            num_iterations=3,
+        )
         torch.manual_seed(4321)
         expected_actions = []
-        for std in expected_stds:
+        for _ in range(3):
             expected_actions.append(
                 base + torch.distributions.Normal(
                     loc=torch.zeros_like(base),
-                    scale=torch.full_like(base, std),
+                    scale=torch.full_like(base, expected_std),
                 ).rsample()
             )
 
@@ -106,11 +114,8 @@ class RolloutNoiseTest(unittest.TestCase):
         trace = rollout(
             policy=zero_policy,
             steps=3,
-            noise_type_dict={
-                'type': 'get_smaller_1',
-                'start_value': 1.0,
-                'end_value': 0.0,
-            },
+            iteration=1,
+            additive_noise=additive_noise,
         )
 
         self.assertEqual(len(captured_actions), 3)
@@ -119,16 +124,61 @@ class RolloutNoiseTest(unittest.TestCase):
             self.assertTrue(torch.allclose(captured_actions[index]['release'], expected))
             self.assertTrue(torch.allclose(trace.actions[index]['release'], expected))
 
-    def test_noise_keeps_gradient_through_actions(self) -> None:
+    def test_constant_noise_keeps_gradient_through_actions(self) -> None:
         value = torch.zeros(3, dtype=torch.float64, requires_grad=True)
+        additive_noise = ConstantAdditiveNoise(std=0.5)
 
         torch.manual_seed(99)
-        noised_value = TorchRolloutCell._add_noise_to_value(value, 0.5)
+        noised_value = additive_noise.apply_to_value(
+            name='action',
+            value=value,
+            context=NoiseContext(),
+        )
         loss = noised_value.sum()
         loss.backward()
 
         self.assertIsNotNone(value.grad)
         self.assertTrue(torch.allclose(value.grad, torch.ones_like(value)))
+
+    def test_jacobian_noise_uses_context_subs(self) -> None:
+        rollout = TorchRollout(self.model, horizon=1, logic=ExactLogic())
+        captured_actions = self._install_capture_step_fn(rollout)
+
+        def zero_policy(observation, step):
+            del observation, step
+            return {'release': torch.zeros_like(rollout.noop_actions['release'])}
+
+        additive_noise = JacobianBasedAdditiveNoise(
+            cpf_name='rlevel',
+            model=self.model,
+        )
+
+        def fake_norm(*, cpf_name, subs, wrt=None, create_graph=False, context=None):
+            del cpf_name, wrt, create_graph
+            self.assertIsNotNone(context)
+            self.assertIs(context.model, self.model)
+            self.assertEqual(subs.keys(), context.subs.keys())
+            return torch.tensor(0.25)
+
+        additive_noise.cpf_jacobian_norm = fake_norm  # type: ignore[method-assign]
+
+        torch.manual_seed(7)
+        expected = torch.distributions.Normal(
+            loc=torch.zeros_like(rollout.noop_actions['release']),
+            scale=torch.full_like(rollout.noop_actions['release'], 0.25),
+        ).rsample()
+
+        torch.manual_seed(7)
+        trace = rollout(
+            policy=zero_policy,
+            steps=1,
+            iteration=3,
+            additive_noise=additive_noise,
+        )
+
+        self.assertEqual(len(captured_actions), 1)
+        self.assertTrue(torch.allclose(captured_actions[0]['release'], expected))
+        self.assertTrue(torch.allclose(trace.actions[0]['release'], expected))
 
 if __name__ == '__main__':
     unittest.main()
