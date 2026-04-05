@@ -31,6 +31,7 @@ def main() -> None:
     # to partition the horizon, and increase batch_num to draw more batches.
     batch_size = horizon
     batch_num = 1
+    partitions = 0      # fix
     iterations = 200
 
     template_rollout = TorchRollout(env.model, horizon=horizon, logic=FuzzyLogic())
