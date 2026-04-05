@@ -1,6 +1,7 @@
 """Torch-native RDDL compiler producing differentiable PyTorch callables."""
 
 from __future__ import annotations
+from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
@@ -204,6 +205,17 @@ class TorchRDDLCompiler:
                 return bool(torch.all(tensor.bool()).item())
             return bool(tensor)
 
+        def _clone_log_value(value: Any) -> Any:
+            if isinstance(value, torch.Tensor):
+                return value.clone()
+            if isinstance(value, dict):
+                return {k: _clone_log_value(v) for (k, v) in value.items()}
+            if isinstance(value, list):
+                return [_clone_log_value(v) for v in value]
+            if isinstance(value, tuple):
+                return tuple(_clone_log_value(v) for v in value)
+            return deepcopy(value)
+
         def _torch_wrapped_single_step(key, actions, subs, model_params):
             errors = self.ERROR_CODES['NORMAL']
 
@@ -255,6 +267,16 @@ class TorchRDDLCompiler:
             reward, key, err, model_params = reward_fn(subs, model_params, key)
             errors |= err
 
+            # Cache a pre-commit snapshot so state fluents reflect s_t while
+            # next-state fluents still expose s_{t+1}, matching the JAX backend.
+            if cache_path_info:
+                fluents = {
+                    name: _clone_log_value(values) for (name, values) in subs.items()
+                    if name not in rddl.non_fluents
+                }
+            else:
+                fluents = {}
+
             # set the next state to the current state
             for (state, next_state) in rddl.next_state.items():
                 # here the state update to the next state
@@ -280,14 +302,6 @@ class TorchRDDLCompiler:
                 sample, key, err, model_params = terminal(subs, model_params, key)
                 terminated_check = terminated_check or _to_bool(sample)
                 errors |= err
-
-            if cache_path_info:
-                fluents = {
-                    name: values for (name, values) in subs.items()
-                    if name not in rddl.non_fluents
-                }
-            else:
-                fluents = {}
 
             log = {
                 'fluents': fluents,
@@ -688,6 +702,10 @@ class TorchRDDLCompiler:
             return torch.logical_and(lhs, rhs)
         if name == 'logical_or':
             return torch.logical_or(lhs, rhs)
+        if name == 'implies':
+            return torch.logical_or(torch.logical_not(lhs.bool()), rhs.bool())
+        if name == 'equiv':
+            return torch.eq(lhs.bool(), rhs.bool())
         raise ValueError(f'Unsupported binary op {name}.')
 
     def _apply_control_if(self, pred: torch.Tensor,
@@ -748,7 +766,7 @@ class TorchRDDLCompiler:
         return gathered.squeeze(0)
 
     def _aggregate(self, op: str, tensor: torch.Tensor, axes: Optional[Sequence[int]]):
-        """Run reduction ops (sum/forall/exists) across specified axes.
+        """Run reduction ops across specified axes.
 
         Args:
             op: Aggregation name.
@@ -762,21 +780,61 @@ class TorchRDDLCompiler:
             >>> compiler._aggregate('sum', torch.ones(2, 3), axes=(0,))
             tensor([2., 2., 2.])
         """
+        if not isinstance(tensor, torch.Tensor):
+            tensor = self._ensure_tensor(tensor)
+        if not isinstance(tensor, torch.Tensor):
+            tensor = torch.tensor(bool(tensor))
         if axes is None:
             axes = tuple(range(tensor.dim()))
         axes = tuple(axes) if isinstance(axes, (list, tuple)) else (axes,)
-        if not isinstance(tensor, torch.Tensor):
-            tensor = torch.tensor(bool(tensor))
-        result = tensor
-        for axis in sorted(axes, reverse=True):
+        normalized_axes = []
+        for axis in axes:
             if axis is None:
                 continue
+            normalized_axis = axis if axis >= 0 else tensor.dim() + axis
+            if normalized_axis not in normalized_axes:
+                normalized_axes.append(normalized_axis)
+        axes = tuple(normalized_axes)
+        if not axes:
+            return tensor
+        if op in {'argmin', 'argmax'}:
+            reducer = torch.argmin if op == 'argmin' else torch.argmax
+            if tensor.dim() == 0:
+                return torch.zeros((), dtype=self.INT, device=tensor.device)
+            if len(axes) == 1:
+                return reducer(tensor, dim=axes[0]).to(dtype=self.INT)
+            keep_axes = tuple(axis for axis in range(tensor.dim()) if axis not in axes)
+            permuted = tensor.permute(keep_axes + axes)
+            kept_shape = [tensor.shape[axis] for axis in keep_axes]
+            reduced_size = 1
+            for axis in axes:
+                reduced_size *= tensor.shape[axis]
+            if kept_shape:
+                reshaped = permuted.reshape(*kept_shape, reduced_size)
+            else:
+                reshaped = permuted.reshape(reduced_size)
+            return reducer(reshaped, dim=-1).to(dtype=self.INT)
+        result = tensor
+        for axis in sorted(axes, reverse=True):
             if op == 'sum':
                 result = torch.sum(result, dim=axis)
+            elif op == 'avg':
+                reduced_input = result
+                if not reduced_input.is_floating_point() and not torch.is_complex(reduced_input):
+                    reduced_input = reduced_input.to(dtype=self.REAL)
+                result = torch.mean(reduced_input, dim=axis)
+            elif op == 'prod':
+                result = torch.prod(result, dim=axis)
+            elif op == 'minimum':
+                result = torch.min(result, dim=axis).values
+            elif op == 'maximum':
+                result = torch.max(result, dim=axis).values
             elif op == 'forall':
                 result = torch.all(result.bool(), dim=axis)
             elif op == 'exists':
                 result = torch.any(result.bool(), dim=axis)
+            else:
+                raise ValueError(f'Unsupported aggregation op {op}.')
         return result
 
     # ------------------------------------------------------------------
@@ -876,7 +934,7 @@ class TorchRDDLCompiler:
         return _fn
 
     def _torch_logical(self, expr, init_params) -> CallableExpr:
-        """Compile logical operators (~, &, |, ^).
+        """Compile logical operators (~, &, |, ^, =>, <=>).
 
         Args:
             expr: Boolean AST node.
@@ -905,6 +963,10 @@ class TorchRDDLCompiler:
             raise RDDLNotImplementedError(
                 f'Logical operator {op} requires at least two arguments.\n' +
                 print_stack_trace(expr))
+        if op in {'=>', '<=>'} and len(args) != 2:
+            raise RDDLNotImplementedError(
+                f'Logical operator {op} requires exactly two arguments.\n' +
+                print_stack_trace(expr))
 
         def _fn(subs, params, key):
             value, key, err, params = args[0](subs, params, key)
@@ -923,6 +985,10 @@ class TorchRDDLCompiler:
                     value = self._apply_binary('logical_and', value, rhs)
                 elif op == '|':
                     value = self._apply_binary('logical_or', value, rhs)
+                elif op == '=>':
+                    value = self._apply_binary('implies', value, rhs)
+                elif op == '<=>':
+                    value = self._apply_binary('equiv', value, rhs)
                 else:
                     raise RDDLNotImplementedError(
                         f'Logical operator {op} is not supported.\n' +
@@ -936,7 +1002,7 @@ class TorchRDDLCompiler:
     # ------------------------------------------------------------------
 
     def _torch_aggregation(self, expr, init_params) -> CallableExpr:
-        """Compile forall/exists/sum aggregations.
+        """Compile aggregation expressions.
 
         Args:
             expr: Aggregation AST node.
@@ -958,10 +1024,22 @@ class TorchRDDLCompiler:
             value, key, err, params = arg_fn(subs, params, key)
             if op == 'sum':
                 reduced = self._aggregate('sum', value, axes)
+            elif op == 'avg':
+                reduced = self._aggregate('avg', value, axes)
+            elif op == 'prod':
+                reduced = self._aggregate('prod', value, axes)
+            elif op == 'minimum':
+                reduced = self._aggregate('minimum', value, axes)
+            elif op == 'maximum':
+                reduced = self._aggregate('maximum', value, axes)
             elif op == 'forall':
                 reduced = self._aggregate('forall', value, axes)
             elif op == 'exists':
                 reduced = self._aggregate('exists', value, axes)
+            elif op == 'argmin':
+                reduced = self._aggregate('argmin', value, axes)
+            elif op == 'argmax':
+                reduced = self._aggregate('argmax', value, axes)
             else:
                 raise RDDLNotImplementedError(
                     f'Aggregation {op} not supported.\n' + print_stack_trace(expr))
@@ -1049,6 +1127,9 @@ class TorchRDDLCompiler:
             'sinh': torch.sinh,
             'cosh': torch.cosh,
             'tanh': torch.tanh,
+            'lngamma': torch.lgamma,
+            'gamma': torch.special.gamma if hasattr(torch.special, 'gamma')
+            else lambda x: torch.exp(torch.lgamma(x)),
             'sgn': torch.sign
         }
         if op not in funcs:
@@ -1080,6 +1161,7 @@ class TorchRDDLCompiler:
             'pow': torch.pow,
             'div': torch.floor_divide,
             'mod': torch.remainder,
+            'fmod': torch.remainder,
             'hypot': lambda a, b: torch.sqrt(a * a + b * b),
             'log': lambda a, b: torch.log(a) / torch.log(b)
         }
