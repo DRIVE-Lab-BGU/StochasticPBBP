@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 from torch import nn
 
-from StochasticPBBP.core.Logic import FuzzyLogic
+from StochasticPBBP.core.Logic import ExactLogic, FuzzyLogic
 from StochasticPBBP.core.Rollout import TorchRollout
 from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
 from StochasticPBBP.utils.Policies import GaussianPolicy
@@ -45,6 +45,7 @@ class Train:
                  seed: int=0,
                  simulator: Optional[Any]=None,
                  additive_noise: Optional[AdditiveNoise]=None,
+                 logic: Optional[object]=None,
                  batch_size: Optional[int]=None,
                  batch_num: int=1) -> None:
         self.action_space = action_space
@@ -52,7 +53,11 @@ class Train:
         self.seed = seed
         torch.manual_seed(seed)
 
-        self.rollout = TorchRollout(model, horizon=horizon, logic=FuzzyLogic())
+        # Training historically used a relaxed backend by default. Keeping that
+        # default preserves current behavior while still allowing callers to opt
+        # into `ExactLogic()` (or another backend) explicitly.
+        self.logic = ExactLogic() if logic is None else logic
+        self.rollout = TorchRollout(model, horizon=horizon, logic=self.logic)
         self.rollout.cell.key.manual_seed(seed)
         self.batch_key = torch.Generator()
         self.batch_key.manual_seed(seed)
@@ -181,7 +186,7 @@ class Train:
         trace = self.rollout(
             policy=self.policy,
             initial_subs=initial_subs,
-            model_params=model_params,
+            model_params=model_params,# the params for logic?
             policy_state=policy_state,
             steps=batch_steps,
             start_step=start_step,
