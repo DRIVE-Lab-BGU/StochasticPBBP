@@ -89,6 +89,17 @@ class TorchRDDLCompiler:
         elif hasattr(backend, 'set_use64bit'):
             backend.set_use64bit(use64bit)
         self.logic = backend
+        # exact and fuzzy backends expose the same operator table, 
+        # so expression compilation can bind whichever
+        # semantics were selected once up-front instead of guessing at runtime.
+        self.EXACT_OPS = ExactLogic(use64bit=use64bit).get_operator_dicts()
+        self.OPS = (self.logic.get_operator_dicts()
+                    if hasattr(self.logic, 'get_operator_dicts')
+                    else self.EXACT_OPS)
+        # here we set a flag to indicate whether the selected 
+        # logic backend is a relaxed/fuzzy logic that can emit soft 
+        # truth values in [0, 1], as opposed to strict boolean values.
+        self.uses_relaxed_logic = not isinstance(self.logic, ExactLogic)
         self.use64bit = use64bit
 
         self.INT = torch.int64 if use64bit else torch.int32
@@ -175,12 +186,20 @@ class TorchRDDLCompiler:
         init_params: Dict[str, Any] = {}
         self.model_params = init_params
 
-        self.invariants = [self._torch(expr, init_params, dtype=torch.bool)
+        # Relaxed logic can emit soft truth values in [0, 1], so keep constraint
+        # expressions in their native backend dtype and only coerce to `bool`
+        # when the transition log is assembled.
+        constraint_dtype = None if self.uses_relaxed_logic else torch.bool
+        
+        # Compile invariants meaning the conditions that must hold in every state, 
+        # preconditions meaning the conditions that must hold for an action to be applicable,
+        # and terminations meaning the conditions that determine whether a state is terminal.
+        self.invariants = [self._torch(expr, init_params, dtype=constraint_dtype)
                            for expr in self.rddl.invariants]
         
-        self.preconditions = [self._torch(expr, init_params, dtype=torch.bool) for expr in self.rddl.preconditions]
+        self.preconditions = [self._torch(expr, init_params, dtype=constraint_dtype) for expr in self.rddl.preconditions]
         
-        self.terminations = [self._torch(expr, init_params, dtype=torch.bool) for expr in self.rddl.terminations]
+        self.terminations = [self._torch(expr, init_params, dtype=constraint_dtype) for expr in self.rddl.terminations]
         
         self.cpfs = self._compile_cpfs(init_params)
 
@@ -551,6 +570,30 @@ class TorchRDDLCompiler:
     # Helpers for operations
     # ------------------------------------------------------------------
 
+    def _bind_logic_operator(self, category: str, expr_id: Any,
+                             init_params: Dict[str, Any],
+                             op_name: Optional[str]=None) -> Callable:
+        """Bind a backend operator once during compilation.
+
+        The torch compiler used to probe the logic backend dynamically at
+        runtime. Fuzzy backends expose factory-style APIs instead, so we resolve
+        the callable here and reuse it for every execution of the compiled node.
+        """
+        factory = self.OPS[category]
+        if op_name is not None:
+            factory = factory[op_name]
+        return factory(expr_id, init_params)
+
+    def _coerce_logic_tensor(self, value: Any, *, promote_real: bool=False) -> torch.Tensor:
+        """Convert values before dispatching them into a logic backend."""
+        tensor = self._ensure_tensor(value)
+        if not isinstance(tensor, torch.Tensor):
+            dtype = self.REAL if promote_real else None
+            tensor = torch.as_tensor(value, dtype=dtype)
+        elif promote_real and not tensor.is_floating_point():
+            tensor = tensor.to(dtype=self.REAL)
+        return tensor
+
     def _try_logic_eval(self, op_name: str, *args):
         """Best-effort call into logic backend; return tensor-like value or None.
 
@@ -858,7 +901,7 @@ class TorchRDDLCompiler:
             >>> value, key, err, params = fn(subs, {}, None)
         """
         _, op = expr.etype
-        #its happen in the elif in jax
+        #its happen in the elif in jax  its means 
         args = [self._torch(arg, init_params) for arg in expr.args]
 
         if len(args) == 1 and op == '-':
@@ -912,6 +955,19 @@ class TorchRDDLCompiler:
         lhs_fn = self._torch(lhs, init_params)
         rhs_fn = self._torch(rhs, init_params)
 
+        if self.uses_relaxed_logic:
+            logic_op = self._bind_logic_operator('relational', expr.id, init_params, op)
+
+            def _fn(subs, params, key):
+                left, key, err1, params = lhs_fn(subs, params, key)
+                right, key, err2, params = rhs_fn(subs, params, key)
+                left = self._coerce_logic_tensor(left, promote_real=True)
+                right = self._coerce_logic_tensor(right, promote_real=True)
+                value, params = logic_op(left, right, params)
+                return value, key, err1 | err2, params
+
+            return _fn
+
         def _fn(subs, params, key):
             left, key, err1, params = lhs_fn(subs, params, key)
             right, key, err2, params = rhs_fn(subs, params, key)
@@ -951,6 +1007,48 @@ class TorchRDDLCompiler:
         """
         _, op = expr.etype
         args = [self._torch(arg, init_params) for arg in expr.args]
+
+        if self.uses_relaxed_logic:
+            if len(args) == 1 and op == '~':
+                logic_not = self._bind_logic_operator('logical_not', expr.id, init_params)
+
+                def _not(subs, params, key):
+                    value, key, err, params = args[0](subs, params, key)
+                    tensor = self._coerce_logic_tensor(value, promote_real=True)
+                    result, params = logic_not(tensor, params)
+                    return result, key, err, params
+
+                return _not
+
+            if len(args) < 2:
+                raise RDDLNotImplementedError(
+                    f'Logical operator {op} requires at least two arguments.\n' +
+                    print_stack_trace(expr))
+            if op in {'=>', '<=>'} and len(args) != 2:
+                raise RDDLNotImplementedError(
+                    f'Logical operator {op} requires exactly two arguments.\n' +
+                    print_stack_trace(expr))
+
+            if op in {'^', '&', '|'}:
+                logic_ops = [
+                    self._bind_logic_operator('logical', f'{expr.id}_{op}{i}', init_params, op)
+                    for i in range(len(args) - 1)
+                ]
+            else:
+                logic_ops = [self._bind_logic_operator('logical', expr.id, init_params, op)]
+
+            def _fn(subs, params, key):
+                value, key, err, params = args[0](subs, params, key)
+                value = self._coerce_logic_tensor(value, promote_real=True)
+                for i, arg_fn in enumerate(args[1:]):
+                    rhs, key, err_rhs, params = arg_fn(subs, params, key)
+                    rhs = self._coerce_logic_tensor(rhs, promote_real=True)
+                    err |= err_rhs
+                    logic_op = logic_ops[i if op in {'^', '&', '|'} else 0]
+                    value, params = logic_op(value, rhs, params)
+                return value, key, err, params
+
+            return _fn
 
         if len(args) == 1 and op == '~':
             def _not(subs, params, key):
@@ -1022,6 +1120,18 @@ class TorchRDDLCompiler:
         _, axes = self.traced.cached_sim_info(expr)
         arg_fn = self._torch(arg, init_params)
 
+        if self.uses_relaxed_logic and op in {'forall', 'exists', 'argmin', 'argmax'}:
+            logic_op = self._bind_logic_operator('aggregation', expr.id, init_params, op)
+
+            def _fn(subs, params, key):
+                value, key, err, params = arg_fn(subs, params, key)
+                promote_real = op in {'argmin', 'argmax'}
+                tensor = self._coerce_logic_tensor(value, promote_real=promote_real)
+                reduced, params = logic_op(tensor, axis=axes, params=params)
+                return reduced, key, err, params
+
+            return _fn
+
         def _fn(subs, params, key):
             value, key, err, params = arg_fn(subs, params, key)
             if op == 'sum':
@@ -1067,6 +1177,17 @@ class TorchRDDLCompiler:
         if len(expr.args) == 1:
             arg_fn = self._torch(expr.args[0], init_params)
 
+            if self.uses_relaxed_logic and op in {'sgn', 'round', 'floor', 'ceil', 'sqrt'}:
+                logic_op = self._bind_logic_operator('unary', expr.id, init_params, op)
+
+                def _unary_relaxed(subs, params, key):
+                    val, key, err, params = arg_fn(subs, params, key)
+                    tensor = self._coerce_logic_tensor(val, promote_real=True)
+                    value, params = logic_op(tensor, params)
+                    return value, key, err, params
+
+                return _unary_relaxed
+
             def _unary(subs, params, key):
                 val, key, err, params = arg_fn(subs, params, key)
                 value = self._apply_function_unary(op, val)
@@ -1077,6 +1198,19 @@ class TorchRDDLCompiler:
         elif len(expr.args) == 2:
             lhs_fn = self._torch(expr.args[0], init_params)
             rhs_fn = self._torch(expr.args[1], init_params)
+
+            if self.uses_relaxed_logic and op in {'div', 'mod', 'fmod'}:
+                logic_op = self._bind_logic_operator('binary', expr.id, init_params, op)
+
+                def _binary_relaxed(subs, params, key):
+                    lhs, key, err1, params = lhs_fn(subs, params, key)
+                    rhs, key, err2, params = rhs_fn(subs, params, key)
+                    lhs = self._coerce_logic_tensor(lhs, promote_real=True)
+                    rhs = self._coerce_logic_tensor(rhs, promote_real=True)
+                    value, params = logic_op(lhs, rhs, params)
+                    return value, key, err1 | err2, params
+
+                return _binary_relaxed
 
             def _binary(subs, params, key):
                 lhs, key, err1, params = lhs_fn(subs, params, key)
@@ -1122,6 +1256,7 @@ class TorchRDDLCompiler:
             'sqrt': torch.sqrt,
             'sin': torch.sin,
             'cos': torch.cos,
+            'sigmoid': torch.sigmoid,
             'tan': torch.tan,
             'asin': torch.asin,
             'acos': torch.acos,
@@ -1235,6 +1370,21 @@ class TorchRDDLCompiler:
             then_fn = self._torch(then_expr, init_params)
             else_fn = self._torch(else_expr, init_params)
 
+            if self.uses_relaxed_logic:
+                logic_if = self._bind_logic_operator('control', expr.id, init_params, 'if')
+
+                def _fn(subs, params, key):
+                    pred_val, key, err_pred, params = pred_fn(subs, params, key)
+                    then_val, key, err_then, params = then_fn(subs, params, key)
+                    else_val, key, err_else, params = else_fn(subs, params, key)
+                    pred_tensor = self._coerce_logic_tensor(pred_val, promote_real=True)
+                    then_tensor = self._coerce_logic_tensor(then_val, promote_real=True)
+                    else_tensor = self._coerce_logic_tensor(else_val, promote_real=True)
+                    result, params = logic_if(pred_tensor, then_tensor, else_tensor, params)
+                    return result, key, err_pred | err_then | err_else, params
+
+                return _fn
+
             def _fn(subs, params, key):
                 pred_val, key, err_pred, params = pred_fn(subs, params, key)
                 then_val, key, err_then, params = then_fn(subs, params, key)
@@ -1251,6 +1401,38 @@ class TorchRDDLCompiler:
             case_fns = [None if arg is None else self._torch(arg, init_params)
                         for arg in cases]
             default_fn = None if default is None else self._torch(default, init_params)
+
+            if self.uses_relaxed_logic:
+                logic_switch = self._bind_logic_operator('control', expr.id, init_params, 'switch')
+
+                def _fn(subs, params, key):
+                    pred_val, key, err, params = pred_fn(subs, params, key)
+                    evaluated_cases = []
+                    total_err = err
+                    default_value = None
+                    if default_fn is not None:
+                        default_value, key, err_def, params = default_fn(subs, params, key)
+                        total_err |= err_def
+                    for case_fn in case_fns:
+                        if case_fn is None:
+                            if default_value is None:
+                                raise RDDLNotImplementedError(
+                                    'Switch case missing value and default is None.\n' +
+                                    print_stack_trace(expr))
+                            evaluated_cases.append(default_value)
+                        else:
+                            val, key, err_case, params = case_fn(subs, params, key)
+                            total_err |= err_case
+                            evaluated_cases.append(val)
+                    pred_tensor = self._coerce_logic_tensor(pred_val, promote_real=True)
+                    stacked = torch.stack([
+                        self._coerce_logic_tensor(case_value, promote_real=True)
+                        for case_value in evaluated_cases
+                    ], dim=0)
+                    result, params = logic_switch(pred_tensor, stacked, params)
+                    return result, key, total_err, params
+
+                return _fn
 
             def _fn(subs, params, key):
                 pred_val, key, err, params = pred_fn(subs, params, key)
@@ -1297,6 +1479,52 @@ class TorchRDDLCompiler:
             arg_fns = [self._torch(arg, init_params)]
         else:
             arg_fns = [self._torch(arg, init_params) for arg in expr.args]
+
+        relaxed_sampling_name = None
+        if self.uses_relaxed_logic:
+            if name in {'Discrete', 'UnnormDiscrete', 'Discrete(p)', 'UnnormDiscrete(p)'}:
+                relaxed_sampling_name = 'Discrete'
+            elif name in self.OPS['sampling']:
+                relaxed_sampling_name = name
+
+        if relaxed_sampling_name is not None:
+            logic_sampler = self._bind_logic_operator(
+                'sampling', expr.id, init_params, relaxed_sampling_name
+            )
+
+            def _fn(subs, params, key):
+                values = []
+                total_err = self.ERROR_CODES['NORMAL']
+                for arg_fn in arg_fns:
+                    val, key, err, params = arg_fn(subs, params, key)
+                    values.append(self._coerce_logic_tensor(val, promote_real=True))
+                    total_err |= err
+                generator = self._ensure_generator(key, values[0].device if values else torch.device('cpu'))
+
+                if name in {'Discrete', 'UnnormDiscrete'}:
+                    prob = torch.stack(values, dim=-1)
+                    if name == 'UnnormDiscrete':
+                        normalizer = torch.sum(prob, dim=-1, keepdim=True)
+                        prob = prob / torch.clamp(normalizer, min=1e-12)
+                    sample, params = logic_sampler(generator, prob, params)
+                elif name in {'Discrete(p)', 'UnnormDiscrete(p)'}:
+                    prob = values[0]
+                    if name == 'UnnormDiscrete(p)':
+                        normalizer = torch.sum(prob, dim=-1, keepdim=True)
+                        prob = prob / torch.clamp(normalizer, min=1e-12)
+                    sample, params = logic_sampler(generator, prob, params)
+                elif name in {'Bernoulli', 'Poisson', 'Geometric'}:
+                    sample, params = logic_sampler(generator, values[0], params)
+                elif name in {'Binomial', 'NegativeBinomial'}:
+                    sample, params = logic_sampler(generator, values[0], values[1], params)
+                else:
+                    raise RDDLNotImplementedError(
+                        f'Relaxed random variable {name} is not supported.\n' +
+                        print_stack_trace(expr))
+
+                return sample, generator, total_err, params
+
+            return _fn
 
         def _fn(subs, params, key):
             values = []
