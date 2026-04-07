@@ -40,6 +40,7 @@ def main() -> None:
     policy = StationaryMarkov(
         observation_template=observation_template,
         action_template=template_rollout.noop_actions,
+        action_space=env.action_space,
         hidden_sizes=hidden_sizes,
     )
 
