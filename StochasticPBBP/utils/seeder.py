@@ -18,19 +18,10 @@ class BaseSeeder(ABC):
 class FibonacciSeeder(BaseSeeder):
     def __init__(self, start_seed: int) -> None:
         super().__init__(start_seed)
-        self._previous = self.start_seed
+        self._previous = 0
         self._current = self.start_seed
-        self._index = 0
 
     def __next__(self) -> int:
-        if self._index == 0:
-            self._index += 1
-            return self.start_seed
-        if self._index == 1:
-            self._index += 1
-            return self.start_seed + self.start_seed
-
         next_value = self._previous + self._current
         self._previous, self._current = self._current, next_value
-        self._index += 1
         return next_value
