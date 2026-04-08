@@ -43,7 +43,7 @@ domain reservoir_control_cont {
 
     cpfs {
         // amount of ran fall for this timestep
-        rain(?r) =  abs[Normal(0, RAIN_VAR(?r))];  
+        rain(?r) =  abs[Normal(0, RAIN_VAR(?r))];
 
         // amount of evaporated water, proportional to the amount of water in the tank
         evaporated(?r) = EVAPORATION_FACTOR * rlevel(?r) / TOP_RES(?r);

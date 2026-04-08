@@ -276,6 +276,10 @@ class StationaryMarkov(nn.Module):
         flat_action = self.network(flat_observation)
         return self._pack_bounded_actions(flat_action)
 
+    def sample_action(self, observation: TensorDict) -> TensorDict:
+        with torch.no_grad():
+            return self.forward(observation, step=None, policy_state=None)
+
 
 class GaussianPolicy(nn.Module):
     """State-independent diagonal Gaussian policy over the action vector."""

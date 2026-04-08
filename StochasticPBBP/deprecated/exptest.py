@@ -25,12 +25,12 @@ from utils.Policies import TensorDict, StationaryMarkov
 
 
 def main() -> None:
-    domain = PACKAGE_ROOT / "problems" / "hvac" / "domain.rddl"
-    instance = PACKAGE_ROOT / "problems" / "hvac" / "instance_2.rddl"
+    # domain = PACKAGE_ROOT / "problems" / "hvac" / "domain.rddl"
+    # instance = PACKAGE_ROOT / "problems" / "hvac" / "instance_2.rddl"
     # domain = PACKAGE_ROOT / "problems" / "hvac" / "domain_c.rddl"
     # instance = PACKAGE_ROOT / "problems" / "hvac" / "instance_2c.rddl"
-    # domain = PACKAGE_ROOT / "problems" / "reservoir" / "domain.rddl"
-    # instance = PACKAGE_ROOT / "problems" / "reservoir" / "instance_3.rddl"
+    domain = PACKAGE_ROOT / "problems" / "reservoir" / "domain.rddl"
+    instance = PACKAGE_ROOT / "problems" / "reservoir" / "instance_3.rddl"
     # domain = PACKAGE_ROOT / "problems" / "navigation" / "domain.rddl"
     # instance = PACKAGE_ROOT / "problems" / "navigation" / "instance_1.rddl"
     # domain = PACKAGE_ROOT / "problems" / "powergen" / "domain.rddl"
@@ -41,9 +41,9 @@ def main() -> None:
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
     horizon = 100
-    hidden_sizes = (128, 64)
+    hidden_sizes = (12, 12)
     iterations = 1000
-    num_seeds = 5
+    num_seeds = 1
     seed_offset = 112
     seeds = [seed_offset + 2*index for index in range(num_seeds)]
 
@@ -254,23 +254,23 @@ def main() -> None:
     #    constant noise 5     #
 
     ###########################
-    start = time.perf_counter()
-    print(f"=== Torch Monte Carlo horizon {horizon:3d}, constant exploration noise 5.0 ===")
-    noise = AdditiveNoiseFactory.create(
-        noise_type='constant',
-        std=5.0,
-        source=template_rollout,
-    )
-    results_with_noise5 = run_experiment(
-        noise_value=noise,
-        label='torch | noise=5.0 ',
-        batch_size=horizon,
-    )
-    end = time.perf_counter()
-    elapsed = end - start
-    print(f"Elapsed time: {elapsed:.6f} seconds torch noise = 5.0\n\n")
-    plots.append(results_with_noise5)
-    colors.append('yellow')
+    # start = time.perf_counter()
+    # print(f"=== Torch Monte Carlo horizon {horizon:3d}, constant exploration noise 5.0 ===")
+    # noise = AdditiveNoiseFactory.create(
+    #     noise_type='constant',
+    #     std=5.0,
+    #     source=template_rollout,
+    # )
+    # results_with_noise5 = run_experiment(
+    #     noise_value=noise,
+    #     label='torch | noise=5.0 ',
+    #     batch_size=horizon,
+    # )
+    # end = time.perf_counter()
+    # elapsed = end - start
+    # print(f"Elapsed time: {elapsed:.6f} seconds torch noise = 5.0\n\n")
+    # plots.append(results_with_noise5)
+    # colors.append('yellow')
 
     ###########################
 
@@ -278,25 +278,25 @@ def main() -> None:
     #    decay noise 5->1     #
 
     ###########################
-    start = time.perf_counter()
-    print(f"=== Torch Monte Carlo horizon {horizon:3d}, decay exploration noise 5.0->1.0 ===")
-    noise = AdditiveNoiseFactory.create(
-        noise_type='decay',
-        start_std=5.0,
-        end_std=0.0,
-        num_iterations=horizon,
-        source=template_rollout,
-    )
-    results_with_noise_decay = run_experiment(
-        noise_value=noise,
-        label='torch | noise=decay ',
-        batch_size=horizon,
-    )
-    end = time.perf_counter()
-    elapsed = end - start
-    print(f"Elapsed time: {elapsed:.6f} seconds torch noise = decay \n\n")
-    plots.append(results_with_noise_decay)
-    colors.append('red')
+    # start = time.perf_counter()
+    # print(f"=== Torch Monte Carlo horizon {horizon:3d}, decay exploration noise 5.0->1.0 ===")
+    # noise = AdditiveNoiseFactory.create(
+    #     noise_type='decay',
+    #     start_std=5.0,
+    #     end_std=0.0,
+    #     num_iterations=horizon,
+    #     source=template_rollout,
+    # )
+    # results_with_noise_decay = run_experiment(
+    #     noise_value=noise,
+    #     label='torch | noise=decay ',
+    #     batch_size=horizon,
+    # )
+    # end = time.perf_counter()
+    # elapsed = end - start
+    # print(f"Elapsed time: {elapsed:.6f} seconds torch noise = decay \n\n")
+    # plots.append(results_with_noise_decay)
+    # colors.append('red')
 
 
     plt.switch_backend("Agg")

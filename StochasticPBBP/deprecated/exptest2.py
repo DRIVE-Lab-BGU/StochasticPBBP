@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import pyRDDLGym
 import torch
 
-from StochasticPBBP.core.Logic import FuzzyLogic
+from StochasticPBBP.core.Logic import FuzzyLogic, ProductTNorm, SigmoidComparison, SoftRandomSampling, SoftRounding,SoftControlFlow
 from StochasticPBBP.core.Rollout import TorchRollout
 from StochasticPBBP.core.Train import Train
 from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
@@ -94,6 +94,17 @@ def run_experiment(
             hidden_sizes=hidden_sizes,
         )
 
+        fuzzy = FuzzyLogic(
+            tnorm=ProductTNorm(),
+            comparison=SigmoidComparison(weight=200.0),
+            rounding=SoftRounding(weight=200.0),
+            control=SoftControlFlow(weight=200.0),
+            sampling=SoftRandomSampling(
+                poisson_max_bins=100,
+                binomial_max_bins=100,
+                bernoulli_gumbel_softmax=False),
+        )
+
         trainer = Train(
             horizon=horizon,
             model=env.model,
@@ -104,6 +115,7 @@ def run_experiment(
             batch_size=horizon,
             seed=seed,
             additive_noise=noise_value,
+            logic=fuzzy,
         )
 
         history, trained_policy = trainer.train_trajectory(
@@ -247,12 +259,12 @@ def plot_results(
 
 
 def main() -> None:
-    domain = PACKAGE_ROOT / 'problems' / 'hvac' / 'domain.rddl'
-    instance = PACKAGE_ROOT / 'problems' / 'hvac' / 'instance_5.rddl'
+    # domain = PACKAGE_ROOT / 'problems' / 'hvac' / 'domain.rddl'
+    # instance = PACKAGE_ROOT / 'problems' / 'hvac' / 'instance_2.rddl'
     # domain = PACKAGE_ROOT / 'problems' / 'hvac' / 'domain_c.rddl'
     # instance = PACKAGE_ROOT / 'problems' / 'hvac' / 'instance_2c.rddl'
-    # domain = PACKAGE_ROOT / 'problems' / 'reservoir' / 'domain.rddl'
-    # instance = PACKAGE_ROOT / 'problems' / 'reservoir' / 'instance_3.rddl'
+    domain = PACKAGE_ROOT / 'problems' / 'reservoir' / 'domain.rddl'
+    instance = PACKAGE_ROOT / 'problems' / 'reservoir' / 'instance_3.rddl'
     # domain = PACKAGE_ROOT / 'problems' / 'navigation' / 'domain.rddl'
     # instance = PACKAGE_ROOT / 'problems' / 'navigation' / 'instance_1.rddl'
     # domain = PACKAGE_ROOT / 'problems' / 'powergen' / 'domain.rddl'
@@ -262,8 +274,8 @@ def main() -> None:
     print(f'INSTANCE={instance}')
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
-    horizon = 100
-    hidden_sizes = (128, 64)
+    horizon = 500
+    hidden_sizes = (12, 12)
     iterations = 1000
     num_seeds = 1
     seed_offset = 112
@@ -289,15 +301,15 @@ def main() -> None:
             'elapsed_label': 'torch noise = 1.0',
             'color': 'black',
         },
-        # {
-        #     'noise_kwargs': {'noise_type': 'constant', 'std': 3.0},
-        #     'label': 'torch | noise=3.0 ',
-        #     'summary_label': (
-        #         f'=== Torch Monte Carlo horizon {horizon:3d}, constant exploration noise 3.0 ==='
-        #     ),
-        #     'elapsed_label': 'torch noise = 3.0',
-        #     'color': 'blue',
-        # },
+        {
+            'noise_kwargs': {'noise_type': 'constant', 'std': 3.0},
+            'label': 'torch | noise=3.0 ',
+            'summary_label': (
+                f'=== Torch Monte Carlo horizon {horizon:3d}, constant exploration noise 3.0 ==='
+            ),
+            'elapsed_label': 'torch noise = 3.0',
+            'color': 'blue',
+        },
         # {
         #     'noise_kwargs': {'noise_type': 'constant', 'std': 5.0},
         #     'label': 'torch | noise=5.0 ',
@@ -307,20 +319,20 @@ def main() -> None:
         #     'elapsed_label': 'torch noise = 5.0',
         #     'color': 'yellow',
         # },
-        {
-            'noise_kwargs': {
-                'noise_type': 'decay',
-                'start_std': 1.0,
-                'end_std': 0.0,
-                'num_iterations': horizon,
-            },
-            'label': 'torch | noise=decay ',
-            'summary_label': (
-                f'=== Torch Monte Carlo horizon {horizon:3d}, decay exploration noise 1.0->0.0 ==='
-            ),
-            'elapsed_label': 'torch noise = decay ',
-            'color': 'red',
-        },
+        # {
+        #     'noise_kwargs': {
+        #         'noise_type': 'decay',
+        #         'start_std': 1.0,
+        #         'end_std': 0.0,
+        #         'num_iterations': horizon,
+        #     },
+        #     'label': 'torch | noise=decay ',
+        #     'summary_label': (
+        #         f'=== Torch Monte Carlo horizon {horizon:3d}, decay exploration noise 1.0->0.0 ==='
+        #     ),
+        #     'elapsed_label': 'torch noise = decay ',
+        #     'color': 'red',
+        # },
     ]
 
     plots: List[Dict[str, Any]] = []
