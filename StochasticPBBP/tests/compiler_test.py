@@ -5,6 +5,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from pyRDDLGym_jax.core.compiler import JaxRDDLCompiler
+#from pyRDDLGym_jax.core.planner import JaxPlanner
 import torch
 import torch
 
@@ -22,12 +23,12 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from core.Compiler import TorchRDDLCompiler
-from core.Logic import ExactLogic
+from core.Logic import ExactLogic, FuzzyLogic
 from core.Initializer import RDDLValueInitializer
 
 
-domain_path   = PACKAGE_ROOT / "problems" / "reservoir" / "domain.rddl"
-instance_path = INSTANCE = PACKAGE_ROOT / "problems" / "reservoir" / "instance_1.rddl"
+domain_path   = PACKAGE_ROOT / "problems" / "hvac" / "domain.rddl"
+instance_path = INSTANCE = PACKAGE_ROOT / "problems" / "hvac" / "instance_2.rddl"
 print(f"domain_path={domain_path}")
 print(f"instance_path={instance_path}")
     
@@ -133,6 +134,15 @@ now_i_check ="rlevel"
 # --- compile jax  ---
 jax_compiler = JaxRDDLCompiler(model, use64bit=False )
 jax_compiler.compile()
+
+
+compiler = TorchRDDLCompiler(model, logic=FuzzyLogic())
+compiler.compile()
+step = compiler.compile_transition()
+
+print("######################torch compiled successfully########################")
+
+exit()
 #print("Compiled model successfully.")
 # print("Initializing values...")
 
@@ -230,7 +240,7 @@ print("#####################jax list rlevel########################")
 ##############################################################
 
 
-torch_compiler = TorchRDDLCompiler(model , use64bit =False)
+torch_compiler = TorchRDDLCompiler(model , use64bit =False  , logic= FuzzyLogic())
 torch_compiler.compile()
 
 print("######################torch compiled successfully########################")

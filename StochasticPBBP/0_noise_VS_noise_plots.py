@@ -178,9 +178,9 @@ def main() -> None:
     horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "400"))
     hidden_sizes = (12, 12)
     iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "200"))
-    num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "2"))
+    num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "10"))
     seed_offset = int(os.environ.get("NOISE_PLOT_SEED_OFFSET", "112"))
-    batched_batch_size = int(os.environ.get("NOISE_PLOT_BATCH_SIZE", "10"))
+    batched_batch_size = int(os.environ.get("NOISE_PLOT_BATCH_SIZE", "5"))
     seeds = [seed_offset + 2*index for index in range(num_seeds)]
 
     template_rollout = TorchRollout(env.model, horizon=horizon, logic=FuzzyLogic())
@@ -275,12 +275,29 @@ def main() -> None:
                 )
 
                 policy.apply(init_weights_xavier)
-
+            from StochasticPBBP.core.Logic import (
+            FuzzyLogic,
+            SigmoidComparison,
+            SoftRounding,
+            SoftControlFlow,
+            SoftRandomSampling,
+            ProductTNorm,
+            )
+            logic = FuzzyLogic(
+                tnorm=ProductTNorm(),
+                comparison=SigmoidComparison(weight=50.0),
+                rounding=SoftRounding(weight=50.0),
+                control=SoftControlFlow(weight=50.0),
+                sampling=SoftRandomSampling(
+                poisson_max_bins=100,
+                binomial_max_bins=100,
+                bernoulli_gumbel_softmax=False,),)
             trainer = Train(
                 horizon=horizon,
                 model=env.model,
                 action_space=env.action_space,
                 policy=policy,
+                logic=logic,
                 lr=0.01,
                 hidden_sizes=hidden_sizes,
                 batch_size=batch_size,
@@ -423,7 +440,7 @@ def main() -> None:
     results_no_noise_no_batch = run_experiment(
         noise_value=0.0,
         label='torch | no noise | batch=1',
-        batch_size=400,
+        batch_size=horizon,
     )
     end = time.perf_counter()
     elapsed = end - start
@@ -439,7 +456,7 @@ def main() -> None:
     results_with_noise_no_batch = run_experiment(
         noise_value=3.0,
         label='torch | noise=3.0 | batch=1',
-        batch_size=400,
+        batch_size=horizon,
     )
     end = time.perf_counter()
     elapsed = end - start
