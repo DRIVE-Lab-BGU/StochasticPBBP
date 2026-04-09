@@ -7,13 +7,14 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import matplotlib.pyplot as plt
 import pyRDDLGym
 import torch
 from torch import nn
 
 from StochasticPBBP.core.Rollout import TorchRollout
 from StochasticPBBP.core.Train import Train
-from StochasticPBBP.utils.Noise import AdditiveNoise
+from StochasticPBBP.utils.Noise import AdditiveNoise, NoAdditiveNoise
 from StochasticPBBP.utils.Policies import StationaryMarkov
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -54,6 +55,8 @@ class ExperimentManager:
                  seed: Optional[int]=None,
                  output_dir: Optional[Path | str]=None,
                  evaluation_seeds: Optional[Sequence[int]]=None,
+                 exact_evaluation: bool=True,
+                 debug_logging: bool=False,
                  policy: Optional[nn.Module]=None,
                  logic: Optional[Any]=None,
                  additive_noise: Optional[AdditiveNoise]=None,
@@ -68,6 +71,8 @@ class ExperimentManager:
         self.seed = self._resolve_training_seed(seed)
         self.output_dir = OUTPUT_DIR if output_dir is None else Path(output_dir)
         self.evaluation_seeds = [int(local_seed) for local_seed in evaluation_seeds] if evaluation_seeds else [self.seed]
+        self.exact_evaluation = bool(exact_evaluation)
+        self.debug_logging = bool(debug_logging)
         self.logic = logic
         self.default_additive_noise = additive_noise
         self.vectorized = vectorized
@@ -125,6 +130,8 @@ class ExperimentManager:
             seed=seed,
             output_dir=self.output_dir,
             evaluation_seeds=self.evaluation_seeds,
+            exact_evaluation=self.exact_evaluation,
+            debug_logging=self.debug_logging,
             logic=self.logic,
             additive_noise=self.default_additive_noise,
             vectorized=self.vectorized,
@@ -170,6 +177,92 @@ class ExperimentManager:
         if additive_noise is None:
             return 'default'
         return type(additive_noise).__name__
+
+    def _debug_run_dir(self, csv_name: str) -> Path:
+        return self.output_dir / 'debug_logs' / f'{Path(csv_name).stem}_seed_{self.seed}'
+
+    @staticmethod
+    def _gradient_norm(policy: nn.Module) -> float:
+        total = 0.0
+        for parameter in policy.parameters():
+            if parameter.grad is None:
+                continue
+            grad_norm = float(parameter.grad.detach().norm().item())
+            total += grad_norm * grad_norm
+        return total ** 0.5
+
+    @staticmethod
+    def _sanitize_name(name: str) -> str:
+        return name.replace('.', '_').replace('/', '_')
+
+    def _write_debug_csv(self, csv_path: Path, rows: Sequence[Dict[str, Any]]) -> None:
+        if not rows:
+            return
+        write_csv_rows(
+            csv_path,
+            rows,
+            fieldnames=list(rows[0].keys()),
+            append=False,
+        )
+
+    def _plot_gradient_norms(self,
+                             debug_dir: Path,
+                             gradient_rows: Sequence[Dict[str, Any]]) -> None:
+        if not gradient_rows:
+            return
+        iterations = [int(row['iteration']) for row in gradient_rows]
+        values = [float(row['gradient_norm']) for row in gradient_rows]
+        plt.switch_backend('Agg')
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        ax.plot(iterations, values, linewidth=2.0)
+        ax.set_xlabel('Iteration')
+        ax.set_ylabel('Gradient norm')
+        ax.set_title('Gradient Norm')
+        ax.grid(True)
+        fig.tight_layout()
+        fig.savefig(debug_dir / 'gradient_norms.png')
+        plt.close(fig)
+
+    def _plot_weight_histograms(self, debug_dir: Path) -> None:
+        named_parameters = list(self.policy.named_parameters())
+        if not named_parameters:
+            return
+        plt.switch_backend('Agg')
+        fig, axes = plt.subplots(len(named_parameters), 1, figsize=(10, 3 * len(named_parameters)))
+        if len(named_parameters) == 1:
+            axes = [axes]
+        for ax, (name, parameter) in zip(axes, named_parameters):
+            values = parameter.detach().cpu().reshape(-1).numpy()
+            ax.hist(values, bins=30, alpha=0.85)
+            ax.set_title(name)
+            ax.grid(True)
+        fig.tight_layout()
+        fig.savefig(debug_dir / 'weights_histograms.png')
+        plt.close(fig)
+
+    def _write_weight_snapshots(self, debug_dir: Path) -> None:
+        rows: List[Dict[str, Any]] = []
+        for name, parameter in self.policy.named_parameters():
+            flattened = parameter.detach().cpu().reshape(-1)
+            rows.append({
+                'parameter': name,
+                'mean': float(flattened.mean().item()),
+                'std': float(flattened.std(unbiased=False).item()),
+                'min': float(flattened.min().item()),
+                'max': float(flattened.max().item()),
+                'numel': int(flattened.numel()),
+            })
+        self._write_debug_csv(debug_dir / 'weight_stats.csv', rows)
+
+    def _finalize_debug_logs(self,
+                             csv_name: str,
+                             gradient_rows: Sequence[Dict[str, Any]]) -> None:
+        debug_dir = self._debug_run_dir(csv_name)
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        self._write_debug_csv(debug_dir / 'gradient_norms.csv', gradient_rows)
+        self._write_weight_snapshots(debug_dir)
+        self._plot_gradient_norms(debug_dir, gradient_rows)
+        self._plot_weight_histograms(debug_dir)
 
     @staticmethod
     def _temp_csv_path(summary_csv_path: Path, seed: int) -> Path:
@@ -271,6 +364,8 @@ class ExperimentManager:
             f"iterations={iterations} horizon={self.horizon} "
             f"batch_size={effective_batch_size} batch_num={effective_batch_num} "
             f"noise={self._describe_noise(effective_noise)} log_every={effective_log_every} "
+            f"evaluation_mode={'exact' if self.exact_evaluation else 'approx'} "
+            f"debug_logging={self.debug_logging} "
             f"evaluation_seeds={self.evaluation_seeds} "
             f"train_csv={training_csv_path} eval_csv={evaluation_csv_path}"
         )
@@ -278,6 +373,7 @@ class ExperimentManager:
         remaining_iterations = int(iterations)
         chunk_histories: List[Dict[str, Any]] = []
         evaluation_rows: List[Dict[str, Any]] = []
+        gradient_rows: List[Dict[str, Any]] = []
 
         while remaining_iterations > 0:
             current_chunk = min(effective_log_every, remaining_iterations)
@@ -306,6 +402,15 @@ class ExperimentManager:
                 'mean_over_seeds': eval_mean,
                 'std_over_seeds': eval_std,
             })
+            latest_training_return = self._returns_by_iteration(self._history)[self._completed_iterations]
+            if self.debug_logging:
+                gradient_rows.append({
+                    'iteration': self._completed_iterations,
+                    'total_accumulated_reward': float(latest_training_return),
+                    'gradient_norm': self._gradient_norm(self.policy),
+                    'eval_mean_return': float(eval_mean),
+                    'eval_std_return': float(eval_std),
+                })
             remaining_iterations -= current_chunk
 
         if write_csv:
@@ -344,6 +449,8 @@ class ExperimentManager:
             self._history,
             iterations=self._completed_iterations,
         )
+        if self.debug_logging:
+            self._finalize_debug_logs(csv_name, gradient_rows)
         evaluation_iterations = [int(row['iteration']) for row in evaluation_rows]
         evaluation_returns = [float(row['mean_over_seeds']) for row in evaluation_rows]
         elapsed = time.perf_counter() - start_time
@@ -430,10 +537,20 @@ class ExperimentManager:
             return observation, float(reward), bool(done)
         raise ValueError(f'Unsupported env.step(action) return format of length {len(step_result)}.')
 
-    def Evaluate(self,
-                 evaluation_seeds: Optional[Sequence[int]]=None,
-                 *,
-                 horizon: Optional[int]=None) -> Tuple[float, float]:
+    def _evaluation_policy(self,
+                           observation: Dict[str, torch.Tensor],
+                           step: int,
+                           policy_state: Any) -> Dict[str, Any]:
+        del step, policy_state
+        if hasattr(self.policy, 'sample_action'):
+            return self.policy.sample_action(observation)
+        with torch.no_grad():
+            return self.policy(observation, step=None, policy_state=None)
+
+    def EvaluateExact(self,
+                      evaluation_seeds: Optional[Sequence[int]]=None,
+                      *,
+                      horizon: Optional[int]=None) -> Tuple[float, float]:
         effective_eval_seeds = self.evaluation_seeds if evaluation_seeds is None else [
             int(local_seed) for local_seed in evaluation_seeds
         ]
@@ -453,19 +570,20 @@ class ExperimentManager:
 
         try:
             for evaluation_seed in effective_eval_seeds:
+                env = pyRDDLGym.make(
+                    domain=str(self.domain),
+                    instance=str(self.instance),
+                    vectorized=self.vectorized,
+                )
                 try:
-                    observation = self._unpack_reset(self.env.reset(seed=int(evaluation_seed)))
+                    observation = self._unpack_reset(env.reset(seed=int(evaluation_seed)))
                     total_return = 0.0
 
                     for step in range(evaluation_horizon):
                         tensor_observation = self._observation_to_tensor_dict(observation)
-                        if hasattr(self.policy, 'sample_action'):
-                            action = self.policy.sample_action(tensor_observation)
-                        else:
-                            with torch.no_grad():
-                                action = self.policy(tensor_observation, step=step, policy_state=None)
+                        action = self._evaluation_policy(tensor_observation, step, None)
                         observation, reward, done = self._unpack_step(
-                            self.env.step(self._action_to_env_dict(action))
+                            env.step(self._action_to_env_dict(action))
                         )
                         total_return += reward
                         if done:
@@ -473,7 +591,7 @@ class ExperimentManager:
 
                     returns.append(total_return)
                 finally:
-                    close_fn = getattr(self.env, 'close', None)
+                    close_fn = getattr(env, 'close', None)
                     if callable(close_fn):
                         close_fn()
         finally:
@@ -486,6 +604,62 @@ class ExperimentManager:
         elapsed = time.perf_counter() - start_time
         print(
             f"[ExperimentManager] eval done "
+            f"mean_return={mean_return:.4f} std_return={std_return:.4f} "
+            f"elapsed={elapsed:.2f}s"
+        )
+        return mean_return, std_return
+
+    def Evaluate(self,
+                 evaluation_seeds: Optional[Sequence[int]]=None,
+                 *,
+                 horizon: Optional[int]=None) -> Tuple[float, float]:
+        if self.exact_evaluation:
+            return self.EvaluateExact(evaluation_seeds=evaluation_seeds, horizon=horizon)
+        return self.EvaluateApprox(evaluation_seeds=evaluation_seeds, horizon=horizon)
+
+    def EvaluateApprox(self,
+                       evaluation_seeds: Optional[Sequence[int]]=None,
+                       *,
+                       horizon: Optional[int]=None) -> Tuple[float, float]:
+        effective_eval_seeds = self.evaluation_seeds if evaluation_seeds is None else [
+            int(local_seed) for local_seed in evaluation_seeds
+        ]
+        if not effective_eval_seeds:
+            raise ValueError('evaluation_seeds must contain at least one seed.')
+
+        evaluation_horizon = self.horizon if horizon is None else int(horizon)
+        print(
+            f"[ExperimentManager] approx eval start "
+            f"iteration={self._completed_iterations} "
+            f"evaluation_seeds={effective_eval_seeds} horizon={evaluation_horizon}"
+        )
+        start_time = time.perf_counter()
+        was_training = self.policy.training
+        self.policy.eval()
+        returns: List[float] = []
+
+        try:
+            for evaluation_seed in effective_eval_seeds:
+                torch.manual_seed(int(evaluation_seed))
+                self.trainer.rollout.cell.key.manual_seed(int(evaluation_seed))
+                with torch.no_grad():
+                    trace = self.trainer.rollout(
+                        policy=self._evaluation_policy,
+                        steps=evaluation_horizon,
+                        iteration=self._completed_iterations,
+                        additive_noise=NoAdditiveNoise(),
+                    )
+                returns.append(float(trace.return_.detach()))
+        finally:
+            if was_training:
+                self.policy.train()
+
+        returns_tensor = torch.tensor(returns, dtype=torch.float32)
+        mean_return = float(returns_tensor.mean().item())
+        std_return = float(returns_tensor.std(unbiased=False).item())
+        elapsed = time.perf_counter() - start_time
+        print(
+            f"[ExperimentManager] approx eval done "
             f"mean_return={mean_return:.4f} std_return={std_return:.4f} "
             f"elapsed={elapsed:.2f}s"
         )
@@ -542,7 +716,8 @@ class ExperimentManager:
             all_training_returns.append(seed_returns)
 
             if evaluate_runs > 0:
-                evaluation_stats.append(manager.Evaluate(evaluate_runs))
+                evaluation_stats.append(manager.Evaluate(effective_seeds[:evaluate_runs]))
+
 
         returns_tensor = torch.tensor(all_training_returns, dtype=torch.float32)
         self._write_summary_csv(summary_csv_path, temp_paths=temp_paths, seeds=effective_seeds)
@@ -581,6 +756,8 @@ class MultiSeedExperimentManager:
                  batch_num: int=1,
                  output_dir: Optional[Path | str]=None,
                  verbose: bool=False,
+                 exact_evaluation: bool=True,
+                 debug_logging: bool=False,
                  logic: Optional[Any]=None,
                  additive_noise: Optional[AdditiveNoise]=None,
                  vectorized: bool=True) -> None:
@@ -599,6 +776,8 @@ class MultiSeedExperimentManager:
         self.batch_num = int(batch_num)
         self.output_dir = OUTPUT_DIR if output_dir is None else Path(output_dir)
         self.verbose = bool(verbose)
+        self.exact_evaluation = bool(exact_evaluation)
+        self.debug_logging = bool(debug_logging)
         self.logic = logic
         self.default_additive_noise = additive_noise
         self.vectorized = vectorized
@@ -628,6 +807,8 @@ class MultiSeedExperimentManager:
             seed=seed,
             output_dir=self.output_dir,
             evaluation_seeds=self.evaluation_seeds,
+            exact_evaluation=self.exact_evaluation,
+            debug_logging=self.debug_logging,
             logic=self.logic,
             additive_noise=self.default_additive_noise,
             vectorized=self.vectorized,
@@ -721,10 +902,12 @@ class MultiSeedExperimentManager:
         print(
             f"[MultiSeedExperimentManager] experiment start "
             f"num_random_policies={self.num_random_policies} "
+            f"evaluation_mode={'exact' if self.exact_evaluation else 'approx'} "
             f"evaluation_seeds={self.evaluation_seeds} iterations={iterations} horizon={self.horizon} "
             f"batch_size={effective_batch_size} batch_num={effective_batch_num} "
             f"noise={type(effective_noise).__name__ if effective_noise is not None else 'default'} "
             f"log_every={effective_log_every} verbose={self.verbose} "
+            f"debug_logging={self.debug_logging} "
             f"training_csv={training_summary_csv_path} eval_csv={evaluation_summary_csv_path}"
         )
         start_time = time.perf_counter()

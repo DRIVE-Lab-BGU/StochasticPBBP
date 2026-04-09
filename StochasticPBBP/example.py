@@ -19,16 +19,17 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 def main() -> None:
     problem = "reservoir"
     instance_number = 3
-    num_random_policies = 5
+    num_random_policies = 1
     seed_start = 42
-    num_eval_seeds = 10
+    num_eval_seeds = 2
     eval_seeder = FibonacciSeeder(seed_start)
     evaluation_seeds = tuple(next(eval_seeder) for _ in range(num_eval_seeds))
-    horizon = 200
-    net_arc = (128, 64)
+    horizon = 100
+    net_arc = (32, 32)
     lr = 1e-2
-    iterations = 1000
-    log_every = 50
+    iterations = 100
+    log_every = 20
+    exact_evaluation = False
 
     domain = os.path.join(PACKAGE_ROOT, 'problems', problem, 'domain.rddl')
     instance = os.path.join(PACKAGE_ROOT, 'problems', problem, 'instance_'+str(instance_number)+'.rddl')
@@ -53,10 +54,12 @@ def main() -> None:
         instance=instance,
         num_random_policies=num_random_policies,
         evaluation_seeds=evaluation_seeds,
+        exact_evaluation=exact_evaluation,
         horizon=horizon,
         hidden_sizes=net_arc,
         lr=lr,
         output_dir=output_dir,
+        debug_logging=True,
         logic=logic,
     )
     no_noise_manager.Train(
@@ -75,10 +78,12 @@ def main() -> None:
         instance=instance,
         num_random_policies=num_random_policies,
         evaluation_seeds=evaluation_seeds,
+        exact_evaluation=exact_evaluation,
         horizon=horizon,
         hidden_sizes=net_arc,
         lr=lr,
         additive_noise=constant_noise,
+        debug_logging=True,
         logic=logic,
         output_dir=output_dir,
     )
