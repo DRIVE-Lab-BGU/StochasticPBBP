@@ -43,14 +43,14 @@ def main() -> None:
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
     # horizon = env.horizon
-    horizon = 400
+    horizon = 100
     hidden_sizes = (12, 12)
     # One full-horizon batch per iteration. Set batch_size smaller than horizon
     # to partition the horizon, and increase batch_num to draw more batches.
     batch_size = horizon
     batch_num = 1
     partitions = 0      # fix
-    iterations = 200
+    iterations = 100
     times = 2
     # i think to add the batch um and size we need to change size of zeros
     mean_returns = torch.zeros(iterations)
@@ -58,11 +58,8 @@ def main() -> None:
         template_rollout = TorchRollout(env.model, horizon=horizon)
         _, observation_template, _ = template_rollout.reset()
 
-        policy = StationaryMarkov(
-            observation_template=observation_template,
-            action_template=template_rollout.noop_actions,
-            hidden_sizes=hidden_sizes,
-        )
+
+
 
         additive_noise = AdditiveNoiseFactory.create(
             noise_type='constant',
@@ -88,27 +85,35 @@ def main() -> None:
                 binomial_max_bins=100,
                 bernoulli_gumbel_softmax=False,),)
 
-        ############
+        policy = StationaryMarkov(
+            observation_template=observation_template,
+            action_template=template_rollout.noop_actions,
+            action_space=env.action_space,
+            hidden_sizes=hidden_sizes,
+        )
+
+
+        
 
         trainer = Train(
-            horizon=horizon,
-            model=env.model,
-            action_space=env.action_space,
-            policy=policy,
-            lr=0.01,
-            hidden_sizes=hidden_sizes,
-            batch_size=batch_size,
-            batch_num=batch_num,
-            seed=seeds+20,
-            additive_noise=additive_noise ,logic=logic)
-        
+                horizon=horizon,
+                model=env.model,
+                action_space=env.action_space,
+                policy=policy,
+                lr=0.01,
+                hidden_sizes=hidden_sizes,
+                batch_size=batch_size,
+                batch_num=batch_num,
+                seed=seeds+20,
+                additive_noise=additive_noise ,logic=logic)
+            
         history, trained_policy = trainer.train_trajectory(
-            iterations=iterations,
-            print_every=500,
-            batch_size=batch_size,
-            batch_num=batch_num,
-            additive_noise=additive_noise,
-        )
+                iterations=iterations,
+                print_every=500,
+                batch_size=batch_size,
+                batch_num=batch_num,
+                additive_noise=additive_noise,
+            )
         all_rewards = [per_inter['return'] for per_inter in history]
         tensor_rewards = torch.tensor(all_rewards)
 

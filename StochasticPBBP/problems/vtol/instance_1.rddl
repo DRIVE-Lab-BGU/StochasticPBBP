@@ -1,0 +1,24 @@
+non-fluents vtol1_nf {
+    domain = VTOL_continuous;
+
+    objects {
+    };
+
+    non-fluents {
+        l1 = 1.0;
+    };
+}
+
+instance vtol1 {
+    domain = VTOL_continuous;
+    non-fluents = vtol1_nf;
+
+    init-state {
+        omega = 1.0;
+        theta = 1.0;
+    };
+
+    max-nondef-actions = 1;
+    horizon = 100;
+    discount = 1.0;
+}

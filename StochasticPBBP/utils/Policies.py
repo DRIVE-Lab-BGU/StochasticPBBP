@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
 
@@ -82,6 +83,7 @@ class StationaryMarkov(nn.Module):
     def __init__(self,
                  observation_template: TensorDict,
                  action_template: TensorDict,
+                 action_space: Any,
                  hidden_sizes: Tuple[int, ...]=(64, 64),
                  init_weights_fn: str='xavier') -> None:
         super().__init__()
@@ -91,7 +93,7 @@ class StationaryMarkov(nn.Module):
             raise ValueError('action_template must contain at least one tensor.')
 
         self.observation_specs = self._build_observation_specs(observation_template)
-        self.action_specs = self._build_action_specs(action_template)
+        self.action_specs = self._build_action_specs(action_template, action_space)
         self.device = self.observation_specs[0]['device']
         self.dtype = torch.float32
 
@@ -125,7 +127,11 @@ class StationaryMarkov(nn.Module):
         return specs
 
     @classmethod
-    def _build_action_specs(cls, action_template: TensorDict) -> List[Dict[str, Any]]:
+    def _build_action_specs(
+        cls,
+        action_template: TensorDict,
+        action_space: Any,
+    ) -> List[Dict[str, Any]]:
         specs: List[Dict[str, Any]] = []
         for (name, template) in action_template.items():
             tensor = cls._as_tensor(template)
@@ -134,14 +140,53 @@ class StationaryMarkov(nn.Module):
                     f'StationaryMarkov supports only floating-point actions, got {name} '
                     f'with dtype {tensor.dtype}.'
                 )
+            lower_bound, upper_bound = cls._resolve_action_bounds(name, action_space, tensor)
             specs.append({
                 'name': name,
                 'shape': tuple(tensor.shape),
                 'numel': int(tensor.numel()),
                 'dtype': tensor.dtype,
                 'device': tensor.device,
+                'lower_bound': lower_bound,
+                'upper_bound': upper_bound,
             })
         return specs
+
+    @staticmethod
+    def _resolve_action_bounds(
+        action_name: str,
+        action_space: Any,
+        reference: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        spaces = getattr(action_space, 'spaces', None)
+        if spaces is None or action_name not in spaces:
+            raise ValueError(
+                f'Action space does not contain a Box for action {action_name!r}.'
+            )
+        box = spaces[action_name]
+        if not hasattr(box, 'low') or not hasattr(box, 'high'):
+            raise ValueError(
+                f'Action space entry for {action_name!r} must define low/high bounds.'
+            )
+        lower_bound = _as_tensor(box.low, dtype=reference.dtype, device=reference.device)
+        upper_bound = _as_tensor(box.high, dtype=reference.dtype, device=reference.device)
+        if lower_bound.numel() == 1:
+            lower_bound = lower_bound.expand(reference.shape)
+        if upper_bound.numel() == 1:
+            upper_bound = upper_bound.expand(reference.shape)
+        if tuple(lower_bound.shape) != tuple(reference.shape):
+            raise ValueError(
+                f'Lower bounds for action {action_name!r} must match shape {tuple(reference.shape)}, '
+                f'got {tuple(lower_bound.shape)}.'
+            )
+        if tuple(upper_bound.shape) != tuple(reference.shape):
+            raise ValueError(
+                f'Upper bounds for action {action_name!r} must match shape {tuple(reference.shape)}, '
+                f'got {tuple(upper_bound.shape)}.'
+            )
+        if torch.any(lower_bound > upper_bound):
+            raise ValueError(f'Action space bounds for {action_name!r} contain low > high.')
+        return lower_bound.clone(), upper_bound.clone()
 
     def _flatten_observation(self, observation: TensorDict) -> torch.Tensor:
         flat_parts: List[torch.Tensor] = []
@@ -158,15 +203,42 @@ class StationaryMarkov(nn.Module):
             flat_parts.append(tensor.to(dtype=self.dtype).reshape(-1))
         return torch.cat(flat_parts, dim=0)
 
-    def _pack_actions(self, flat_action: torch.Tensor) -> TensorDict:
+    def _pack_bounded_actions(self, flat_action: torch.Tensor) -> TensorDict:
         actions: TensorDict = {}
         start = 0
         for spec in self.action_specs:
             end = start + spec['numel']
             raw_action = flat_action[start:end].reshape(spec['shape'])
-            actions[spec['name']] = raw_action.to(dtype=spec['dtype'], device=spec['device'])
+            bounded_action = self._apply_action_constraints(raw_action, spec)
+            actions[spec['name']] = bounded_action.to(dtype=spec['dtype'], device=spec['device'])
             start = end
         return actions
+
+    def _apply_action_constraints(self,
+                                  raw_action: torch.Tensor,
+                                  spec: Dict[str, Any]) -> torch.Tensor:
+        lower_bound = spec['lower_bound'].to(dtype=raw_action.dtype, device=raw_action.device)
+        upper_bound = spec['upper_bound'].to(dtype=raw_action.dtype, device=raw_action.device)
+        bounded_action = raw_action.clone()
+
+        has_lower = torch.isfinite(lower_bound)
+        has_upper = torch.isfinite(upper_bound)
+        both_bounded = has_lower & has_upper
+        lower_only = has_lower & ~has_upper
+        upper_only = ~has_lower & has_upper
+
+        if torch.any(both_bounded):
+            normalized_action = torch.sigmoid(raw_action)
+            scaled_action = lower_bound + (upper_bound - lower_bound) * normalized_action
+            bounded_action = torch.where(both_bounded, scaled_action, bounded_action)
+        if torch.any(lower_only):
+            lower_bounded_action = lower_bound + F.softplus(raw_action)
+            bounded_action = torch.where(lower_only, lower_bounded_action, bounded_action)
+        if torch.any(upper_only):
+            upper_bounded_action = upper_bound - F.softplus(raw_action)
+            bounded_action = torch.where(upper_only, upper_bounded_action, bounded_action)
+
+        return bounded_action
 
     def _initialize_network(self, init_weights_fn: str) -> None:
         normalized_name = init_weights_fn.strip().lower()
@@ -202,7 +274,11 @@ class StationaryMarkov(nn.Module):
         del step, policy_state
         flat_observation = self._flatten_observation(observation)
         flat_action = self.network(flat_observation)
-        return self._pack_actions(flat_action)
+        return self._pack_bounded_actions(flat_action)
+
+    def sample_action(self, observation: TensorDict) -> TensorDict:
+        with torch.no_grad():
+            return self.forward(observation, step=None, policy_state=None)
 
 
 class GaussianPolicy(nn.Module):

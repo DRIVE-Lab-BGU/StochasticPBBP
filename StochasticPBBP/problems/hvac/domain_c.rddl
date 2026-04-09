@@ -12,9 +12,9 @@ domain hvac{
 	pvariables {
 
 		// constants
-		ADJ-ZONES(zone, zone)	: { non-fluent, bool, default = false };		// bi-directional adjecency between zones
+		ADJ-ZONES(zone, zone)	: { non-fluent, real, default = 0 };		// bi-directional adjacency between zones
 		TEMP-OUT				: { non-fluent, real, default = 3 };			// outside temperature
-		ADJ-HEATER(heater, zone): { non-fluent, bool, default = false }; 		// is a heater connected to a zone
+		ADJ-HEATER(heater, zone): { non-fluent, real, default = 0 }; 		// is a heater connected to a zone
 		AIR-COST				: { non-fluent, real, default = 0.05 };			// air cost
 		HEAT-COST(heater)    	: { non-fluent, real, default = 5.0 };		    // heat cost
 		ZONE-DISCOMFORT-PENALTY	: { non-fluent, real, default = 20.0 };		    // zone temperature out of range discomfort penalty
@@ -29,17 +29,17 @@ domain hvac{
 		DELTA-T					: { non-fluent, real, default = 0.1 };			// control time period
 		SIGMA(zone)				: { non-fluent, real, default = 0.1 };			// heat conductivity of room's walls
 		P-SWITCH(zone)          : { non-fluent, real, default = 0.0 };          // occupancy switch probability per period per zone
-		HEAT-TOL        : { non-fluent, real, default = 0.01 };          // tolerance for heat input to avoid zero
+		TAU                     : { non-fluent, real, default = 0.01 };          // sigmoid temperature
 
 		// interm fluents
 		temp-1(heater) : { interm-fluent, real };					// the temperature before the heater, from outside and circulated air
-		fan-in-eff(zone) : { interm-fluent, real };					// effective air flow into the system, with enforced boundaries
-		heat-input-eff(heater) : { interm-fluent, real };				// effective heat input, make sure zero is not selected with some tolerance
+		adj_heater_zone(heater) : { interm-fluent, real };
+		adj_zone_heater(zone) : { interm-fluent, real };
 
 		// states
 		temp-zone(zone) : { state-fluent, real, default = 1 };
 		temp-heater(heater) : { state-fluent, real, default = 1 };
-		occupied(zone)      : { state-fluent, bool, default = true };
+		occupied(zone)      : { state-fluent, real, default = 1 };
 
 		// actions
 		fan-in(zone) : {action-fluent, real, default = 1 };
@@ -50,48 +50,49 @@ domain hvac{
 	cpfs {
 
 		// occupation switch: simplified to allow people to leave premises gradually (e.g. end of workday)
-		fan-in-eff(?z) = max[OUT-AIR-FLOW, fan-in(?z)];
-		heat-input-eff(?h) = if (heat-input(?h) < 0)
-		                     then (min[heat-input(?h), -HEAT-TOL])
-		                     else (max[heat-input(?h), HEAT-TOL]);
-		occupied'(?z) = occupied(?z) ^ Bernoulli(1.0 - P-SWITCH(?z));
+		occupied'(?z) = occupied(?z);
+		// * Bernoulli(1.0 - P-SWITCH(?z));
 
 		// derived air temperature before each heater
-		temp-1(?h) = if ((sum_{?z : zone}[ADJ-HEATER(?h, ?z)]) > 0)
-		             then 1/(sum_{?z : zone}[ADJ-HEATER(?h, ?z)]) * (sum_{?z : zone}[ (temp-zone(?z) + (TEMP-OUT - temp-zone(?z)*OUT-AIR-FLOW/fan-in-eff(?z)))*ADJ-HEATER(?h, ?z) ])
-		             else 0;
+		adj_heater_zone(?h) = 1/(1+exp[-1/TAU*(sum_{?z : zone}[ADJ-HEATER(?h, ?z)])]);
+		adj_zone_heater(?z) = 1/(1+exp[-1/TAU*(sum_{?h : heater}[ADJ-HEATER(?h, ?z)])]);
+
+		temp-1(?h) = adj_heater_zone(?h) * (1/(sum_{?z : zone}[ADJ-HEATER(?h, ?z)]) * (sum_{?z : zone}[ (temp-zone(?z) + (TEMP-OUT - temp-zone(?z)*OUT-AIR-FLOW/fan-in(?z)))*ADJ-HEATER(?h, ?z) ]));
 
 		// heater's new output air temperature
 		temp-heater'(?h) =
 		                - K-dh * pow[temp-heater(?h) , 2] +
-                        if ((sum_{?z : zone}[ADJ-HEATER(?h, ?z)]) > 0)
-                        then temp-heater(?h)
-					         + DELTA-T / HEATER-VOL(?h) * (sum_{?z : zone} [ADJ-HEATER(?h, ?z)*fan-in-eff(?z)]) / (sum_{?z : zone} [ADJ-HEATER(?h, ?z)]) * (temp-1(?h) - TEMP-OUT)
-					         + DELTA-T / (K * HEATER-VOL(?h)) * heat-input-eff(?h)
-					    else temp-heater(?h)
-					         + DELTA-T / (K * HEATER-VOL(?h)) * heat-input-eff(?h);
+                        adj_heater_zone(?h)*(
+                             temp-heater(?h)
+					         + DELTA-T / HEATER-VOL(?h) * (sum_{?z : zone} [ADJ-HEATER(?h, ?z)*fan-in(?z)]) / (sum_{?z : zone} [ADJ-HEATER(?h, ?z)]) * (temp-1(?h) - TEMP-OUT)
+					         + DELTA-T / (K * HEATER-VOL(?h)) * heat-input(?h) )
+					    + (1-adj_heater_zone(?h))*(temp-heater(?h) + DELTA-T / (K * HEATER-VOL(?h)) * heat-input(?h));
 
 		// zone's new inner temperature
 		temp-zone'(?z) =
 		                - K-dz * pow[temp-zone(?z) - TEMP-OUT, 2] +
-    		            if ((sum_{?h : heater}[ADJ-HEATER(?h, ?z)]) > 0)
-    		            then temp-zone(?z)
-    		                 + DELTA-T / (ZONE-VOL(?z) * (sum_{?h : heater}[ADJ-HEATER(?h, ?z)])) * fan-in-eff(?z) * (sum_{?h : heater}[(temp-heater(?h) - temp-zone(?z)) * ADJ-HEATER(?h, ?z)])
+		                adj_zone_heater(?z) * (
+		                    temp-zone(?z)
+    		                 + DELTA-T / (ZONE-VOL(?z) * (sum_{?h : heater}[ADJ-HEATER(?h, ?z)])) * fan-in(?z) * (sum_{?h : heater}[(temp-heater(?h) - temp-zone(?z)) * ADJ-HEATER(?h, ?z)])
     		                 + DELTA-T * (sum_{?z2 : zone} [ ZONE-VOL(?z2)/ZONE-VOL(?z)*SIGMA(?z) * (temp-zone(?z2) - temp-zone(?z)) *
-							 (ADJ-ZONES(?z, ?z2) | ADJ-ZONES(?z2, ?z))])
-						else temp-zone(?z)
+							 (ADJ-ZONES(?z, ?z2) + ADJ-ZONES(?z2, ?z) - ADJ-ZONES(?z, ?z2) * ADJ-ZONES(?z2, ?z))])
+		                ) + (1-adj_zone_heater(?z)) * (
+		                    temp-zone(?z)
 						     + DELTA-T * (sum_{?z2 : zone} [ ZONE-VOL(?z2)/ZONE-VOL(?z)*SIGMA(?z) * (temp-zone(?z2) - temp-zone(?z)) *
-							 (ADJ-ZONES(?z, ?z2) | ADJ-ZONES(?z2, ?z))]);
+							 (ADJ-ZONES(?z, ?z2) + ADJ-ZONES(?z2, ?z) - ADJ-ZONES(?z, ?z2) * ADJ-ZONES(?z2, ?z))])
+		                );
+
 	};
 
-	reward = -(sum_{?h : heater}[HEAT-COST(?h) * pow[heat-input-eff(?h), 2]])
-	         - AIR-COST * (sum_{?z : zone}[pow[fan-in-eff(?z), 2]])
+
+    reward = -(sum_{?h : heater}[HEAT-COST(?h) * pow[heat-input(?h), 2]])
+	         - AIR-COST * (sum_{?z : zone}[pow[fan-in(?z), 2]])
 			 - ZONE-DISCOMFORT-PENALTY * (sum_{?z1 : zone}[
-				if (occupied(?z1) ^ (temp-zone(?z1) < TEMP-ZONE-MIN))
-				   then pow[temp-zone(?z1) - TEMP-ZONE-MIN, 2]
-				else if (occupied(?z1) ^ (temp-zone(?z1) > TEMP-ZONE-MAX))
-				   then pow[temp-zone(?z1) - TEMP-ZONE-MAX, 2]
-				else 0.0]);
+			    (1/(1+exp[-1/TAU*(-occupied(?z1) * (temp-zone(?z1) + TEMP-ZONE-MIN))])) * (pow[temp-zone(?z1) - TEMP-ZONE-MIN, 2])
+			    + (1-1/(1+exp[-1/TAU*(-occupied(?z1) * (temp-zone(?z1) + TEMP-ZONE-MIN))])) * (
+			        (1/(1+exp[-1/TAU*(occupied(?z1) * (temp-zone(?z1) - TEMP-ZONE-MAX))])) * (pow[temp-zone(?z1) - TEMP-ZONE-MAX, 2])
+			    )
+			 ]);
 
 
 	action-preconditions {
