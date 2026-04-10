@@ -27,7 +27,7 @@ class state2action(nn.Module):
     def __init__(self,
                  observation_template: TensorDict,
                  action_template: TensorDict,
-                 hidden_sizes: Tuple[int, ...]=(64, 64)) -> None:
+                 hidden_sizes: Tuple[int, ...]=(12, 12)) -> None:
         super().__init__()
         if not observation_template:
             raise ValueError('observation_template must contain at least one tensor.')
@@ -183,7 +183,7 @@ def main() -> None:
     batched_batch_size = int(os.environ.get("NOISE_PLOT_BATCH_SIZE", "5"))
     seeds = [seed_offset + 2*index for index in range(num_seeds)]
 
-    template_rollout = TorchRollout(env.model, horizon=horizon, logic=FuzzyLogic())
+    template_rollout = TorchRollout(env.model, horizon=horizon)
     _, observation_template, _ = template_rollout.reset()
     action_template = template_rollout.noop_actions
 
@@ -311,7 +311,7 @@ def main() -> None:
 
             history, trained_policy = trainer.train_trajectory(
                 iterations=iterations,
-                print_every=0,
+                print_every=100,
                 batch_size=batch_size,
                 additive_noise=trainer.default_additive_noise,
             )
@@ -361,6 +361,7 @@ def main() -> None:
                 import jax.random as jax_random
                 from pyRDDLGym_jax.core.planner import JaxBackpropPlanner, JaxDeepReactivePolicy
                 from pyRDDLGym_jax.core.logic import FuzzyLogic as JaxFuzzyLogic
+                import pyRDDLGym_jax.core.compiler 
         except ModuleNotFoundError as exc:
             raise RuntimeError(
                 'JaxPlan comparison requires jax and pyRDDLGym_jax to be installed.'
@@ -468,15 +469,15 @@ def main() -> None:
     #       with batch        #
 
     ###########################
-    start = time.perf_counter()
-    results_no_noise_with_batch = run_experiment(
-        noise_value=0.0,
-        label=f'torch | no noise | batch={batched_batch_size}',
-        batch_size=batched_batch_size,
-    )
-    end = time.perf_counter()
-    elapsed = end - start
-    print(f"Elapsed time: {elapsed:.6f} seconds torch no noise batch={batched_batch_size}")
+    # start = time.perf_counter()
+    # results_no_noise_with_batch = run_experiment(
+    #     noise_value=0.0,
+    #     label=f'torch | no noise | batch={batched_batch_size}',
+    #     batch_size=batched_batch_size,
+    # )
+    # end = time.perf_counter()
+    # elapsed = end - start
+    # print(f"Elapsed time: {elapsed:.6f} seconds torch no noise batch={batched_batch_size}")
 
     ###########################
 
@@ -484,15 +485,15 @@ def main() -> None:
     #       with batch        #
 
     ###########################
-    start = time.perf_counter()
-    results_with_noise_with_batch = run_experiment(
-        noise_value=3.0,
-        label=f'torch | noise=3.0 | batch={batched_batch_size}',
-        batch_size=batched_batch_size,
-    )
-    end = time.perf_counter()
-    elapsed = end - start
-    print(f"Elapsed time: {elapsed:.6f} seconds torch noise batch={batched_batch_size}")
+    # start = time.perf_counter()
+    # results_with_noise_with_batch = run_experiment(
+    #     noise_value=3.0,
+    #     label=f'torch | noise=3.0 | batch={batched_batch_size}',
+    #     batch_size=batched_batch_size,
+    # )
+    # end = time.perf_counter()
+    # elapsed = end - start
+    # print(f"Elapsed time: {elapsed:.6f} seconds torch noise batch={batched_batch_size}")
     ###########################
 
     #          jax            #
@@ -550,18 +551,18 @@ def main() -> None:
         color='tab:orange',
         linestyle='-',
     )
-    plot_mean_with_std_band(
-        axes[0],
-        results_no_noise_with_batch,
-        color='tab:blue',
-        linestyle='--',
-    )
-    plot_mean_with_std_band(
-        axes[0],
-        results_with_noise_with_batch,
-        color='tab:orange',
-        linestyle='--',
-    )
+    # plot_mean_with_std_band(
+    #     axes[0],
+    #     results_no_noise_with_batch,
+    #     color='tab:blue',
+    #     linestyle='--',
+    # )
+    # plot_mean_with_std_band(
+    #     axes[0],
+    #     results_with_noise_with_batch,
+    #     color='tab:orange',
+    #     linestyle='--',
+    # )
     plot_mean_with_std_band(
         axes[0],
         results_jax,
@@ -575,18 +576,18 @@ def main() -> None:
     axes[0].grid(True)
     axes[0].legend()
 
-    plot_mean_with_std_band(
-        axes[1],
-        results_no_noise_with_batch,
-        color='tab:blue',
-        linestyle='--',
-    )
-    plot_mean_with_std_band(
-        axes[1],
-        results_with_noise_with_batch,
-        color='tab:orange',
-        linestyle='--',
-    )
+    # plot_mean_with_std_band(
+    #     axes[1],
+    #     results_no_noise_with_batch,
+    #     color='tab:blue',
+    #     linestyle='--',
+    # )
+    # plot_mean_with_std_band(
+    #     axes[1],
+    #     results_with_noise_with_batch,
+    #     color='tab:orange',
+    #     linestyle='--',
+    # )
     plot_mean_with_std_band(
         axes[1],
         results_jax,
