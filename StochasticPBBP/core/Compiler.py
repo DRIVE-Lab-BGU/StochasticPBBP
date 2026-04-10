@@ -51,7 +51,62 @@ CallableExpr = Callable[[Args, Dict[str, Any], Optional[torch.Generator]],
 class TorchRDDLCompiler:
     """Compiles RDDL expressions into eager PyTorch callables."""
 
-    ERROR_CODES = {'NORMAL': 0}
+    ERROR_CODES = {
+        'NORMAL': 0,
+        'INVALID_CAST': 2 ** 0,
+        'INVALID_PARAM_UNIFORM': 2 ** 1,
+        'INVALID_PARAM_NORMAL': 2 ** 2,
+        'INVALID_PARAM_EXPONENTIAL': 2 ** 3,
+        'INVALID_PARAM_WEIBULL': 2 ** 4,
+        'INVALID_PARAM_BERNOULLI': 2 ** 5,
+        'INVALID_PARAM_POISSON': 2 ** 6,
+        'INVALID_PARAM_GAMMA': 2 ** 7,
+        'INVALID_PARAM_BETA': 2 ** 8,
+        'INVALID_PARAM_GEOMETRIC': 2 ** 9,
+        'INVALID_PARAM_PARETO': 2 ** 10,
+        'INVALID_PARAM_STUDENT': 2 ** 11,
+        'INVALID_PARAM_GUMBEL': 2 ** 12,
+        'INVALID_PARAM_LAPLACE': 2 ** 13,
+        'INVALID_PARAM_CAUCHY': 2 ** 14,
+        'INVALID_PARAM_GOMPERTZ': 2 ** 15,
+        'INVALID_PARAM_CHISQUARE': 2 ** 16,
+        'INVALID_PARAM_KUMARASWAMY': 2 ** 17,
+        'INVALID_PARAM_DISCRETE': 2 ** 18,
+        'INVALID_PARAM_KRON_DELTA': 2 ** 19,
+        'INVALID_PARAM_DIRICHLET': 2 ** 20,
+        'INVALID_PARAM_MULTIVARIATE_STUDENT': 2 ** 21,
+        'INVALID_PARAM_MULTINOMIAL': 2 ** 22,
+        'INVALID_PARAM_BINOMIAL': 2 ** 23,
+        'INVALID_PARAM_NEGATIVE_BINOMIAL': 2 ** 24
+    }
+
+    INVERSE_ERROR_CODES = {
+        0: 'Casting occurred that could result in loss of precision.',
+        1: 'Found Uniform(a, b) distribution where a > b.',
+        2: 'Found Normal(m, v^2) distribution where v < 0.',
+        3: 'Found Exponential(s) distribution where s <= 0.',
+        4: 'Found Weibull(k, l) distribution where either k <= 0 or l <= 0.',
+        5: 'Found Bernoulli(p) distribution where either p < 0 or p > 1.',
+        6: 'Found Poisson(l) distribution where l < 0.',
+        7: 'Found Gamma(k, l) distribution where either k <= 0 or l <= 0.',
+        8: 'Found Beta(a, b) distribution where either a <= 0 or b <= 0.',
+        9: 'Found Geometric(p) distribution where either p < 0 or p > 1.',
+        10: 'Found Pareto(k, l) distribution where either k <= 0 or l <= 0.',
+        11: 'Found Student(df) distribution where df <= 0.',
+        12: 'Found Gumbel(m, s) distribution where s <= 0.',
+        13: 'Found Laplace(m, s) distribution where s <= 0.',
+        14: 'Found Cauchy(m, s) distribution where s <= 0.',
+        15: 'Found Gompertz(k, l) distribution where either k <= 0 or l <= 0.',
+        16: 'Found ChiSquare(df) distribution where df <= 0.',
+        17: 'Found Kumaraswamy(a, b) distribution where either a <= 0 or b <= 0.',
+        18: 'Found Discrete(p) distribution where either p < 0 or p does not sum to 1.',
+        19: 'Found KronDelta(x) distribution where x is not int nor bool.',
+        20: 'Found Dirichlet(alpha) distribution where alpha < 0.',
+        21: 'Found MultivariateStudent(mean, cov, df) distribution where df <= 0.',
+        22: 'Found Multinomial(n, p) distribution where either p < 0, p does not sum to 1, or n <= 0.',
+        23: 'Found Binomial(n, p) distribution where either p < 0, p > 1, or n < 0.',
+        24: 'Found NegativeBinomial(n, p) distribution where either p < 0, p > 1, or n <= 0.'
+    }
 
     def __init__(self, rddl: RDDLLiftedModel,
    
@@ -96,10 +151,10 @@ class TorchRDDLCompiler:
         self.OPS = (self.logic.get_operator_dicts()
                     if hasattr(self.logic, 'get_operator_dicts')
                     else self.EXACT_OPS)
-        # here we set a flag to indicate whether the selected 
-        # logic backend is a relaxed/fuzzy logic that can emit soft 
-        # truth values in [0, 1], as opposed to strict boolean values.
-        self.uses_relaxed_logic = not isinstance(self.logic, ExactLogic)
+        # Import aliasing in local scripts/tests can produce multiple ExactLogic
+        # class identities (`core.Logic` vs `StochasticPBBP.core.Logic`). Treat
+        # backends by their semantic role rather than strict class identity.
+        self.uses_relaxed_logic = not self._is_exact_logic_backend(self.logic)
         self.use64bit = use64bit
 
         self.INT = torch.int64 if use64bit else torch.int32
@@ -121,6 +176,137 @@ class TorchRDDLCompiler:
         self.model_params: Dict[str, Any] = {}
         self.levels = None
         self.traced = None
+
+    @staticmethod
+    def _is_exact_logic_backend(backend: Any) -> bool:
+        return isinstance(backend, ExactLogic) or type(backend).__name__ == 'ExactLogic'
+
+    @staticmethod
+    def get_error_codes(error: int) -> List[int]:
+        binary = reversed(bin(error)[2:])
+        return [i for (i, c) in enumerate(binary) if c == '1']
+
+    @staticmethod
+    def get_error_messages(error: int) -> List[str]:
+        return [
+            TorchRDDLCompiler.INVERSE_ERROR_CODES[i]
+            for i in TorchRDDLCompiler.get_error_codes(error)
+            if i in TorchRDDLCompiler.INVERSE_ERROR_CODES
+        ]
+
+    def _error_if_invalid(self, invalid: Any, code_name: str) -> int:
+        tensor = self._ensure_tensor(invalid)
+        if bool(torch.any(tensor).item()):
+            return self.ERROR_CODES[code_name]
+        return self.ERROR_CODES['NORMAL']
+
+    def _distribution_param_error(self, name: str, values: List[torch.Tensor]) -> int:
+        if name == 'KronDelta':
+            tensor = values[0]
+            invalid = not (tensor.dtype == torch.bool or not torch.is_floating_point(tensor))
+            return self._error_if_invalid(invalid, 'INVALID_PARAM_KRON_DELTA')
+
+        if name == 'Uniform':
+            low, high = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            return self._error_if_invalid(low > high, 'INVALID_PARAM_UNIFORM')
+
+        if name == 'Normal':
+            _, var = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            return self._error_if_invalid(var < 0, 'INVALID_PARAM_NORMAL')
+
+        if name == 'Exponential':
+            scale = values[0].to(self.REAL)
+            return self._error_if_invalid(scale <= 0, 'INVALID_PARAM_EXPONENTIAL')
+
+        if name == 'Weibull':
+            shape, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            return self._error_if_invalid((shape <= 0) | (scale <= 0), 'INVALID_PARAM_WEIBULL')
+
+        if name == 'Gamma':
+            shape, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            return self._error_if_invalid((shape <= 0) | (scale <= 0), 'INVALID_PARAM_GAMMA')
+
+        if name == 'Beta':
+            a, b = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            return self._error_if_invalid((a <= 0) | (b <= 0), 'INVALID_PARAM_BETA')
+
+        if name == 'Poisson':
+            rate = values[0].to(self.REAL)
+            return self._error_if_invalid(rate < 0, 'INVALID_PARAM_POISSON')
+
+        if name == 'Bernoulli':
+            prob = values[0].to(self.REAL)
+            return self._error_if_invalid((prob < 0) | (prob > 1), 'INVALID_PARAM_BERNOULLI')
+
+        if name == 'Binomial':
+            trials, prob = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            invalid = (prob < 0) | (prob > 1) | (trials < 0)
+            return self._error_if_invalid(invalid, 'INVALID_PARAM_BINOMIAL')
+
+        if name == 'NegativeBinomial':
+            trials, prob = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            invalid = (prob < 0) | (prob > 1) | (trials <= 0)
+            return self._error_if_invalid(invalid, 'INVALID_PARAM_NEGATIVE_BINOMIAL')
+
+        if name == 'Geometric':
+            prob = values[0].to(self.REAL)
+            return self._error_if_invalid((prob < 0) | (prob > 1), 'INVALID_PARAM_GEOMETRIC')
+
+        if name == 'Pareto':
+            shape, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            return self._error_if_invalid((shape <= 0) | (scale <= 0), 'INVALID_PARAM_PARETO')
+
+        if name == 'Student':
+            df = values[0].to(self.REAL)
+            return self._error_if_invalid(df <= 0, 'INVALID_PARAM_STUDENT')
+
+        if name == 'Gumbel':
+            _, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            return self._error_if_invalid(scale <= 0, 'INVALID_PARAM_GUMBEL')
+
+        if name == 'Laplace':
+            _, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            return self._error_if_invalid(scale <= 0, 'INVALID_PARAM_LAPLACE')
+
+        if name == 'Cauchy':
+            _, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            return self._error_if_invalid(scale <= 0, 'INVALID_PARAM_CAUCHY')
+
+        if name == 'Gompertz':
+            shape, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            return self._error_if_invalid((shape <= 0) | (scale <= 0), 'INVALID_PARAM_GOMPERTZ')
+
+        if name == 'ChiSquare':
+            df = values[0].to(self.REAL)
+            return self._error_if_invalid(df <= 0, 'INVALID_PARAM_CHISQUARE')
+
+        if name == 'Kumaraswamy':
+            a, b = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
+            return self._error_if_invalid((a <= 0) | (b <= 0), 'INVALID_PARAM_KUMARASWAMY')
+
+        if name in {'Discrete', 'UnnormDiscrete'}:
+            prob = torch.stack([val.to(self.REAL) for val in values], dim=-1)
+            if name == 'UnnormDiscrete':
+                prob = prob / torch.sum(prob, dim=-1, keepdim=True)
+            invalid = torch.any(prob < 0)
+            prob_sum = torch.sum(prob, dim=-1)
+            invalid = invalid | torch.logical_not(
+                torch.all(torch.isclose(prob_sum, torch.ones_like(prob_sum), atol=1e-4, rtol=1e-4))
+            )
+            return self._error_if_invalid(invalid, 'INVALID_PARAM_DISCRETE')
+
+        if name in {'Discrete(p)', 'UnnormDiscrete(p)'}:
+            prob = values[0].to(self.REAL)
+            if name == 'UnnormDiscrete(p)':
+                prob = prob / torch.sum(prob, dim=-1, keepdim=True)
+            invalid = torch.any(prob < 0)
+            prob_sum = torch.sum(prob, dim=-1)
+            invalid = invalid | torch.logical_not(
+                torch.all(torch.isclose(prob_sum, torch.ones_like(prob_sum), atol=1e-4, rtol=1e-4))
+            )
+            return self._error_if_invalid(invalid, 'INVALID_PARAM_DISCRETE')
+
+        return self.ERROR_CODES['NORMAL']
 
 
     # ------------------------------------------------------------------
@@ -186,19 +372,19 @@ class TorchRDDLCompiler:
         init_params: Dict[str, Any] = {}
         self.model_params = init_params
 
-        # Relaxed logic can emit soft truth values in [0, 1], so keep constraint
-        # expressions in their native backend dtype and only coerce to `bool`
-        # when the transition log is assembled.
+
         constraint_dtype = None if self.uses_relaxed_logic else torch.bool
-        
         # Compile invariants meaning the conditions that must hold in every state, 
-        # preconditions meaning the conditions that must hold for an action to be applicable,
+        
+
         # and terminations meaning the conditions that determine whether a state is terminal.
         self.invariants = [self._torch(expr, init_params, dtype=constraint_dtype)
                            for expr in self.rddl.invariants]
         
+        # preconditions meaning the conditions that must hold for an action to be applicable.
         self.preconditions = [self._torch(expr, init_params, dtype=constraint_dtype) for expr in self.rddl.preconditions]
         
+        # and terminations meaning the conditions that determine whether a state is terminal.        
         self.terminations = [self._torch(expr, init_params, dtype=constraint_dtype) for expr in self.rddl.terminations]
         
         self.cpfs = self._compile_cpfs(init_params)
@@ -261,6 +447,11 @@ class TorchRDDLCompiler:
             #     'action': tensor(...),
             #     ...
             # }
+            precondition_check = True
+            for precond in preconds:
+                sample, key, err, model_params = precond(subs, model_params, key)
+                precondition_check = precondition_check and _to_bool(sample)
+                errors |= err
 
             # calculate CPFs in topological order
             for (name, cpf) in cpfs.items():
@@ -306,11 +497,7 @@ class TorchRDDLCompiler:
             
             #####################################################
 
-            precondition_check = True
-            for precond in preconds:
-                sample, key, err, model_params = precond(subs, model_params, key)
-                precondition_check = precondition_check and _to_bool(sample)
-                errors |= err
+
 
             invariant_check = True
             for invariant in invariants:
@@ -594,44 +781,12 @@ class TorchRDDLCompiler:
             tensor = tensor.to(dtype=self.REAL)
         return tensor
 
-    def _try_logic_eval(self, op_name: str, *args):
-        """Best-effort call into logic backend; return tensor-like value or None.
-
-        The logic API in this project has two styles:
-        1) runtime callables that consume tensors directly
-        2) factory methods `(id, init_params) -> callable`
-        When style (2) is encountered here, we skip it and fall back to raw torch ops.
-        """
-        if self.logic is None or not hasattr(self.logic, op_name):
-            return None
-
-        op = getattr(self.logic, op_name)
-        if not callable(op):
-            return None
-
-        try:
-            result = op(*args)
-        except Exception:
-            return None
-
-        # Some logic backends return `(value, params)`.
-        if isinstance(result, tuple):
-            if len(result) == 0:
-                return None
-            result = result[0]
-
-        # Factory-style API returns a callable, not a computed value.
-        if callable(result):
-            return None
-
-        if isinstance(result, torch.Tensor):
-            return result
-
-        tensor = self._ensure_tensor(result)
-        return tensor if isinstance(tensor, torch.Tensor) else None
-
     def _apply_unary(self, name: str, value: torch.Tensor):
-        """Apply unary ops using logic backend or fallback torch ops.
+        """Apply exact unary ops.
+
+        Relaxed/fuzzy unary operators are already intercepted earlier in the
+        compiler and bound through `self.OPS`. By the time execution reaches
+        this helper, the remaining path should be plain torch semantics.
 
         Args:
             name: Identifier of the unary operation.
@@ -644,9 +799,6 @@ class TorchRDDLCompiler:
             >>> compiler._apply_unary('neg', torch.tensor(1.))
             tensor(-1.)
         """
-        logic_value = self._try_logic_eval(name, value)
-        if logic_value is not None:
-            return logic_value
         if name == 'neg':
             return -value
         if name == 'logical_not':
@@ -654,7 +806,11 @@ class TorchRDDLCompiler:
         raise ValueError(f'Unsupported unary op {name}.')
 
     def _apply_binary(self, name: str, lhs: torch.Tensor, rhs: torch.Tensor):
-        """Apply binary operations with optional logic backend overrides.
+        """Apply exact binary operations.
+
+        Relaxed comparisons and logical operators are compiled via bound logic
+        callables before this helper is ever used. This helper therefore keeps
+        only the exact torch fallback behavior.
 
         Args:
             name: Operation identifier.
@@ -696,10 +852,6 @@ class TorchRDDLCompiler:
                 if rhs.shape[0] != 1:
                     rhs = rhs.unsqueeze(0)
                 rhs = rhs.expand((target,) + rhs.shape[1:])
-
-        logic_value = self._try_logic_eval(name, lhs, rhs)
-        if logic_value is not None:
-            return logic_value
         if name == 'add':
             return torch.add(lhs, rhs)
         if name == 'sub':
@@ -756,7 +908,11 @@ class TorchRDDLCompiler:
     def _apply_control_if(self, pred: torch.Tensor,
                           then_value: torch.Tensor,
                           else_value: torch.Tensor):
-        """Evaluate an `if` control expression using backend logic if available.
+        """Evaluate an exact `if` control expression.
+
+        Relaxed control flow is handled in `_torch_control` by binding the
+        backend-specific operator during compilation. This helper is only for
+        the exact branch.
 
         Args:
             pred: Predicate tensor.
@@ -778,15 +934,13 @@ class TorchRDDLCompiler:
             except Exception:
                 pred_val = False
             pred = torch.tensor(pred_val, dtype=self.REAL)
-        logic_value = self._try_logic_eval('control_if', pred, then_value, else_value)
-        if logic_value is None:
-            logic_value = self._try_logic_eval('if_then_else', pred, then_value, else_value)
-        if logic_value is not None:
-            return logic_value
         return torch.where(pred.to(dtype=self.REAL) > 0.5, then_value, else_value)
 
     def _apply_control_switch(self, pred: torch.Tensor, cases: torch.Tensor):
         """Select a case tensor according to the predicate index.
+
+        The fuzzy `switch` path is resolved earlier by `_torch_control`. This
+        helper preserves the exact gather-style semantics only.
 
         Args:
             pred: Tensor encoding the case index.
@@ -799,11 +953,6 @@ class TorchRDDLCompiler:
             >>> compiler._apply_control_switch(torch.tensor(1), torch.tensor([[0.], [2.]]))
             tensor(2.)
         """
-        logic_value = self._try_logic_eval('control_switch', pred, cases)
-        if logic_value is None:
-            logic_value = self._try_logic_eval('switch', pred, cases)
-        if logic_value is not None:
-            return logic_value
         pred_long = pred.to(dtype=torch.long).unsqueeze(0)
         reference = cases[:1]
         expanded_index = pred_long.expand_as(reference)
@@ -1224,7 +1373,10 @@ class TorchRDDLCompiler:
             f'Functional operator {op} is not supported.\n' + print_stack_trace(expr))
 
     def _apply_function_unary(self, op: str, value: torch.Tensor) -> torch.Tensor:
-        """Apply unary math ops with logic overrides when available.
+        """Apply exact unary math ops.
+
+        Relaxed variants such as `sgn`, `floor`, `round`, `ceil`, and `sqrt`
+        are intercepted in `_torch_functional` before reaching this helper.
 
         Args:
             op: Name of unary function (e.g., `sin`, `abs`).
@@ -1243,9 +1395,6 @@ class TorchRDDLCompiler:
             if not isinstance(tensor, torch.Tensor):
                 tensor = torch.as_tensor(tensor, dtype=self.REAL)
             return torch.sign(tensor)
-        logic_value = self._try_logic_eval(op, value)
-        if logic_value is not None:
-            return logic_value
         funcs = {
             'abs': torch.abs,
             'exp': torch.exp,
@@ -1275,7 +1424,10 @@ class TorchRDDLCompiler:
 
     def _apply_function_binary(self, op: str, lhs: torch.Tensor,
                                rhs: torch.Tensor) -> torch.Tensor:
-        """Apply binary math ops with logic overrides when available.
+        """Apply exact binary math ops.
+
+        Relaxed variants such as `div` and `mod` are intercepted in
+        `_torch_functional` and therefore never reach this helper.
 
         Args:
             op: Name of binary function (e.g., `min`, `pow`).
@@ -1289,9 +1441,6 @@ class TorchRDDLCompiler:
             >>> compiler._apply_function_binary('min', torch.tensor(1.), torch.tensor(2.))
             tensor(1.)
         """
-        logic_value = self._try_logic_eval(op, lhs, rhs)
-        if logic_value is not None:
-            return logic_value
         funcs = {
             'min': torch.minimum,
             'max': torch.maximum,
@@ -1479,7 +1628,8 @@ class TorchRDDLCompiler:
             arg_fns = [self._torch(arg, init_params)]
         else:
             arg_fns = [self._torch(arg, init_params) for arg in expr.args]
-
+        # this flag is used to determine whether to bind relaxed sampling(e.g., normal) or exact sampling
+        # operators for this random variable, which is needed for relaxed logic compilation
         relaxed_sampling_name = None
         if self.uses_relaxed_logic:
             if name in {'Discrete', 'UnnormDiscrete', 'Discrete(p)', 'UnnormDiscrete(p)'}:
@@ -1522,6 +1672,7 @@ class TorchRDDLCompiler:
                         f'Relaxed random variable {name} is not supported.\n' +
                         print_stack_trace(expr))
 
+                total_err |= self._distribution_param_error(name, values)
                 return sample, generator, total_err, params
 
             return _fn
@@ -1535,13 +1686,16 @@ class TorchRDDLCompiler:
                 total_err |= err
             device = values[0].device if values else torch.device('cpu')
             generator = self._ensure_generator(key, device)
-            sample = self._sample_random_variable(name, values, generator, expr)
+            sample, sample_err = self._sample_random_variable(name, values, generator, expr)
+            total_err |= sample_err
             return sample, generator, total_err, params
 
         return _fn
 
     def _sample_random_variable(self, name: str, values: List[torch.Tensor],
-                                generator: torch.Generator, expr) -> torch.Tensor:
+                                generator: torch.Generator, expr) -> Tuple[torch.Tensor, int]:
+        error = self._distribution_param_error(name, values)
+
         if name == 'KronDelta': # checked
             sample = values[0].to(dtype=self.INT)
 
@@ -1559,15 +1713,14 @@ class TorchRDDLCompiler:
             # reparametrization trick to allow backprop through the sampling process, 
             # following the convention of mean and variance as parameters
             mean, var = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            #std = torch.sqrt(torch.clamp(var, min=1e-8))
-            std= torch.sqrt(var)
+            std = torch.sqrt(var)
             eps = torch.randn(mean.shape, generator=generator, device=mean.device, dtype=self.REAL)
             sample = mean + std * eps
             
 
          # reparameterization trick Exp(s) = s * Exp(1)
         elif name == 'Exponential': #checked
-            scale = torch.clamp(values[0].to(self.REAL), min=1e-8)
+            scale = values[0].to(self.REAL)
             exp1 = torch.empty_like(scale).exponential_(1.0, generator=generator)  # Exp(rate=1)
             sample = scale * exp1
 
@@ -1575,8 +1728,6 @@ class TorchRDDLCompiler:
         
         elif name == 'Weibull': #checked
             shape, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            shape = torch.clamp(shape, min=1e-8)
-            scale = torch.clamp(scale, min=1e-8)
             rand = torch.rand(scale.shape, generator=generator, device=scale.device, dtype=self.REAL)
             # log1p means lod(1+x)
             sample = scale * torch.pow(-torch.log1p(-torch.clamp(rand, max=1.0 - 1e-8)), 1.0 / shape)
@@ -1586,106 +1737,102 @@ class TorchRDDLCompiler:
 
         elif name == 'Gamma': # checked
             shape, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            shape = torch.clamp(shape, min=1e-8)
-            scale = torch.clamp(scale, min=1e-8)
-            gamma = torch.distributions.Gamma(concentration=shape, rate=1.0)
-            sample = scale * gamma.sample(generator=generator)
+            gamma = torch._standard_gamma(shape, generator=generator).to(dtype=self.REAL)
+            sample = scale * gamma
         
         
         
         elif name == 'Beta': # checked
             a, b = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            a = torch.clamp(a, min=1e-8)
-            b = torch.clamp(b, min=1e-8)
-            dist = torch.distributions.Beta(a, b)
-            sample = dist.sample(generator=generator)
+            gamma_a = torch._standard_gamma(a, generator=generator).to(dtype=self.REAL)
+            gamma_b = torch._standard_gamma(b, generator=generator).to(dtype=self.REAL)
+            sample = gamma_a / torch.clamp(gamma_a + gamma_b, min=1e-12)
         
 
         # TBD
         
         elif name == 'Poisson':
-            rate = torch.clamp(values[0].to(self.REAL), min=0.0)
-            sample = torch.poisson(rate, generator=generator).to(dtype=self.INT)
+            rate = values[0].to(self.REAL)
+            safe_rate = torch.where(rate >= 0, rate, torch.zeros_like(rate))
+            sample = torch.poisson(safe_rate, generator=generator).to(dtype=self.INT)
 
         elif name == 'Bernoulli':
-            probs = torch.clamp(values[0].to(self.REAL), 0.0, 1.0)
+            probs = values[0].to(self.REAL)
             rand = torch.rand(probs.shape, generator=generator, device=probs.device, dtype=self.REAL)
             sample = (rand <= probs).to(dtype=self.REAL)
 
         elif name == 'Binomial':
             trials, prob = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            trials = torch.clamp(trials, min=0.0)
-            prob = torch.clamp(prob, 0.0, 1.0)
-            dist = torch.distributions.Binomial(total_count=trials, probs=prob)
+            safe_trials = torch.where(trials >= 0, trials, torch.zeros_like(trials))
+            safe_prob = torch.where((prob >= 0) & (prob <= 1), prob, torch.zeros_like(prob))
+            dist = torch.distributions.Binomial(total_count=safe_trials, probs=safe_prob)
             sample = dist.sample().to(dtype=self.INT)
         
         elif name == 'NegativeBinomial':
             trials, prob = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            trials = torch.clamp(trials, min=1e-8)
-            prob = torch.clamp(prob, 0.0, 1.0)
+            safe_trials = torch.where(trials > 0, trials, torch.ones_like(trials))
+            safe_prob = torch.where((prob >= 0) & (prob <= 1), prob, torch.zeros_like(prob))
             # keep pyRDDLGym_jax convention: failures before `trials` successes
-            dist = torch.distributions.NegativeBinomial(total_count=trials, probs=1.0 - prob)
+            dist = torch.distributions.NegativeBinomial(total_count=safe_trials, probs=1.0 - safe_prob)
             sample = dist.sample().to(dtype=self.INT)
         
         elif name == 'Geometric':
-            prob = torch.clamp(values[0].to(self.REAL), min=1e-8, max=1.0 - 1e-8)
-            dist = torch.distributions.Geometric(probs=prob)
-            sample = dist.sample().to(dtype=self.INT)
+            prob = values[0].to(self.REAL)
+            safe_prob = torch.clamp(prob, min=1e-8, max=1.0 - 1e-8)
+            rand = torch.rand(prob.shape, generator=generator, device=prob.device, dtype=self.REAL)
+            sample = torch.floor(torch.log1p(-rand) / torch.log1p(-safe_prob)) + 1
+            sample = sample.to(dtype=self.INT)
         
         
         elif name == 'Pareto':
             shape, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            shape = torch.clamp(shape, min=1e-8)
-            scale = torch.clamp(scale, min=1e-8)
-            dist = torch.distributions.Pareto(scale=scale, alpha=shape)
-            sample = dist.sample()
+            rand = torch.rand(scale.shape, generator=generator, device=scale.device, dtype=self.REAL)
+            sample = scale * torch.pow(torch.clamp(1.0 - rand, min=1e-8), -1.0 / shape)
         
         
         elif name == 'Student':
-            df = torch.clamp(values[0].to(self.REAL), min=1e-8)
-            dist = torch.distributions.StudentT(df=df)
-            sample = dist.sample()
+            df = values[0].to(self.REAL)
+            z = torch.randn(df.shape, generator=generator, device=df.device, dtype=self.REAL)
+            chi2 = 2.0 * torch._standard_gamma(df * 0.5, generator=generator).to(dtype=self.REAL)
+            sample = z / torch.sqrt(chi2 / df)
         
         elif name == 'Gumbel':
             mean, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            scale = torch.clamp(scale, min=1e-8)
-            dist = torch.distributions.Gumbel(loc=mean, scale=scale)
-            sample = dist.sample()
+            rand = torch.rand(mean.shape, generator=generator, device=mean.device, dtype=self.REAL)
+            rand = rand.clamp(1e-8, 1.0 - 1e-8)
+            sample = mean - scale * torch.log(-torch.log(rand))
         
         
         elif name == 'Laplace':
             mean, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            scale = torch.clamp(scale, min=1e-8)
-            dist = torch.distributions.Laplace(loc=mean, scale=scale)
-            sample = dist.sample()
+            rand = torch.rand(mean.shape, generator=generator, device=mean.device, dtype=self.REAL)
+            centered = rand - 0.5
+            centered = centered.clamp(-0.5 + 1e-8, 0.5 - 1e-8)
+            sample = mean - scale * torch.sign(centered) * torch.log1p(-2.0 * torch.abs(centered))
         
         
         elif name == 'Cauchy':
             mean, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            scale = torch.clamp(scale, min=1e-8)
-            dist = torch.distributions.Cauchy(loc=mean, scale=scale)
-            sample = dist.sample()
+            rand = torch.rand(mean.shape, generator=generator, device=mean.device, dtype=self.REAL)
+            centered = rand - 0.5
+            centered = centered.clamp(-0.5 + 1e-8, 0.5 - 1e-8)
+            sample = mean + scale * torch.tan(torch.pi * centered)
         
         
         elif name == 'Gompertz':
             shape, scale = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            shape = torch.clamp(shape, min=1e-8)
-            scale = torch.clamp(scale, min=1e-8)
             rand = torch.rand(scale.shape, generator=generator, device=scale.device, dtype=self.REAL)
             inner = 1.0 - torch.log1p(-torch.clamp(rand, max=1.0 - 1e-8)) / shape
-            sample = torch.log(torch.clamp(inner, min=1e-8)) / scale
+            sample = torch.log(inner) / scale
         
         
         elif name == 'ChiSquare':
-            df = torch.clamp(values[0].to(self.REAL), min=1e-8)
-            dist = torch.distributions.Chi2(df=df)
-            sample = dist.sample()
+            df = values[0].to(self.REAL)
+            sample = 2.0 * torch._standard_gamma(df * 0.5, generator=generator).to(dtype=self.REAL)
         
         
         elif name == 'Kumaraswamy':
             a, b = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
-            a = torch.clamp(a, min=1e-8)
-            b = torch.clamp(b, min=1e-8)
             rand = torch.rand(a.shape, generator=generator, device=a.device, dtype=self.REAL)
             sample = torch.pow(1.0 - torch.pow(rand, 1.0 / b), 1.0 / a)
         
@@ -1708,7 +1855,7 @@ class TorchRDDLCompiler:
         else:
             raise RDDLNotImplementedError(
                 f'Random variable {name} is not supported.\n' + print_stack_trace(expr))
-        return sample
+        return sample, error
 
     def _sample_discrete(self, prob: torch.Tensor, generator: torch.Generator) -> torch.Tensor:
         prob = torch.clamp(prob, min=0.0).to(dtype=self.REAL)
@@ -1777,13 +1924,20 @@ class TorchRDDLCompiler:
             df_val, key, err3, params = df_fn(subs, params, key)
             mean_t = self._ensure_tensor(mean_val).to(self.REAL)
             cov_t = self._ensure_tensor(cov_val).to(self.REAL)
-            df_t = torch.clamp(self._ensure_tensor(df_val).to(self.REAL), min=1e-8)
+            df_t = self._ensure_tensor(df_val).to(self.REAL)
+            err = err1 | err2 | err3 | self._error_if_invalid(
+                df_t <= 0, 'INVALID_PARAM_MULTIVARIATE_STUDENT'
+            )
+            generator = self._ensure_generator(key, mean_t.device)
             df_expand = df_t[..., None, None].expand(mean_t.shape + (1,))
-            z = torch.distributions.StudentT(df=df_expand).sample()
+            z = torch.randn(mean_t.shape + (1,), generator=generator,
+                            device=mean_t.device, dtype=self.REAL)
+            chi2 = 2.0 * torch._standard_gamma(df_expand * 0.5, generator=generator).to(dtype=self.REAL)
+            z = z / torch.sqrt(chi2 / df_expand)
             chol = torch.linalg.cholesky(cov_t)
             sample = torch.matmul(chol, z)[..., 0] + mean_t
             sample = torch.movedim(sample, source=-1, destination=index)
-            return sample, key, err1 | err2 | err3, params
+            return sample, generator, err, params
 
         return _fn
 
@@ -1795,10 +1949,13 @@ class TorchRDDLCompiler:
 
         def _fn(subs, params, key):
             alpha_val, key, err, params = alpha_fn(subs, params, key)
-            alpha_t = torch.clamp(self._ensure_tensor(alpha_val).to(self.REAL), min=1e-8)
-            sample = torch.distributions.Dirichlet(concentration=alpha_t).sample()
+            alpha_t = self._ensure_tensor(alpha_val).to(self.REAL)
+            generator = self._ensure_generator(key, alpha_t.device)
+            gamma = torch._standard_gamma(alpha_t, generator=generator).to(dtype=self.REAL)
+            sample = gamma / torch.clamp(torch.sum(gamma, dim=-1, keepdim=True), min=1e-12)
             sample = torch.movedim(sample, source=-1, destination=index)
-            return sample, key, err, params
+            err |= self._error_if_invalid(alpha_t <= 0, 'INVALID_PARAM_DIRICHLET')
+            return sample, generator, err, params
 
         return _fn
 
@@ -1812,16 +1969,28 @@ class TorchRDDLCompiler:
         def _fn(subs, params, key):
             trials_val, key, err1, params = trials_fn(subs, params, key)
             prob_val, key, err2, params = prob_fn(subs, params, key)
-            total_count = torch.clamp(self._ensure_tensor(trials_val).to(self.REAL), min=0.0)
-            prob_t = torch.clamp(self._ensure_tensor(prob_val).to(self.REAL), min=0.0)
-            normalizer = torch.sum(prob_t, dim=-1, keepdim=True)
-            prob_t = prob_t / torch.clamp(normalizer, min=1e-12)
+            total_count = self._ensure_tensor(trials_val).to(self.REAL)
+            prob_t = self._ensure_tensor(prob_val).to(self.REAL)
+            err = err1 | err2
+            prob_sum = torch.sum(prob_t, dim=-1)
+            invalid = (
+                torch.any(prob_t < 0)
+                | torch.logical_not(
+                    torch.all(torch.isclose(prob_sum, torch.ones_like(prob_sum), atol=1e-4, rtol=1e-4))
+                )
+                | torch.any(total_count < 0)
+            )
+            err |= self._error_if_invalid(invalid, 'INVALID_PARAM_MULTINOMIAL')
+            safe_total_count = torch.where(total_count >= 0, total_count, torch.zeros_like(total_count))
+            safe_prob = torch.clamp(prob_t, min=0.0)
+            normalizer = torch.sum(safe_prob, dim=-1, keepdim=True)
+            safe_prob = safe_prob / torch.clamp(normalizer, min=1e-12)
+            generator = self._ensure_generator(key, safe_prob.device)
             try:
-                sample = torch.distributions.Multinomial(total_count=total_count, probs=prob_t).sample()
+                sample = torch.distributions.Multinomial(total_count=safe_total_count, probs=safe_prob).sample()
             except Exception:
-                generator = self._ensure_generator(key, prob_t.device)
-                flat_prob = prob_t.reshape(-1, prob_t.shape[-1])
-                flat_count = total_count.reshape(-1)
+                flat_prob = safe_prob.reshape(-1, safe_prob.shape[-1])
+                flat_count = safe_total_count.reshape(-1)
                 rows = []
                 for i in range(flat_prob.shape[0]):
                     count = max(0, int(round(float(flat_count[i].item()))))
@@ -1832,10 +2001,10 @@ class TorchRDDLCompiler:
                                                 generator=generator)
                         row = torch.bincount(idx, minlength=flat_prob.shape[-1]).to(self.REAL)
                     rows.append(row)
-                sample = torch.stack(rows, dim=0).reshape(prob_t.shape)
+                sample = torch.stack(rows, dim=0).reshape(safe_prob.shape)
             sample = sample.to(dtype=self.INT)
             sample = torch.movedim(sample, source=-1, destination=index)
-            return sample, key, err1 | err2, params
+            return sample, generator, err, params
 
         return _fn
 

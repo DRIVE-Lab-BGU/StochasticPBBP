@@ -9,7 +9,7 @@ from torch import nn
 from StochasticPBBP.core.Logic import ExactLogic, FuzzyLogic
 from StochasticPBBP.core.Rollout import TorchRollout
 from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
-from StochasticPBBP.utils.Policies import GaussianPolicy
+from StochasticPBBP.utils.Policies import StationaryMarkov
 
 # from .Logic import FuzzyLogic
 # from .Policies import GaussianPolicy
@@ -57,7 +57,7 @@ class Train:
         # default preserves current behavior while still allowing callers to opt
         # into `ExactLogic()` (or another backend) explicitly.
         self.logic = ExactLogic() if logic is None else logic
-        self.rollout = TorchRollout(model, horizon=horizon, logic=self.logic)
+        self.rollout = TorchRollout(model, horizon=horizon, logic=self.logic ,key=torch.Generator().manual_seed(seed))
         self.rollout.cell.key.manual_seed(seed)
         self.batch_key = torch.Generator()
         self.batch_key.manual_seed(seed)
@@ -68,7 +68,7 @@ class Train:
         self.default_batch_num = self._validate_batch_num(batch_num)
 
         if policy is None:
-            policy = GaussianPolicy(action_template=self.rollout.noop_actions)
+                raise ValueError('A policy must be provided.')
         self.policy = policy
         self.optimizer = torch.optim.RMSprop(self.policy.parameters(), lr=lr)
 
@@ -305,11 +305,6 @@ class Train:
                         f"steps={int(metrics['steps'])}"
                     )
 
-        if isinstance(self.policy, GaussianPolicy):
-            dist = self.policy.distribution()
-            print(f'self.policy.mu: {dist.mean.detach()}')
-            print(f'self.policy.std: {dist.stddev.detach()}')
-
         return history, self.policy
 
     def train_batch(self,
@@ -326,3 +321,4 @@ class Train:
             batch_num=batch_num,
             additive_noise=additive_noise,
         )
+    
