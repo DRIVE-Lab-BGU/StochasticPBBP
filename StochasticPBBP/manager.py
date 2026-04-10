@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pyRDDLGym
 import torch
 from torch import nn
@@ -52,6 +53,7 @@ class ExperimentManager:
                  lr: float=1e-2,
                  batch_size: Optional[int]=None,
                  batch_num: int=1,
+                 grad_clip_norm: float=100.0,
                  seed: Optional[int]=None,
                  output_dir: Optional[Path | str]=None,
                  evaluation_seeds: Optional[Sequence[int]]=None,
@@ -68,6 +70,7 @@ class ExperimentManager:
         self.lr = float(lr)
         self.batch_size = batch_size
         self.batch_num = int(batch_num)
+        self.grad_clip_norm = float(grad_clip_norm)
         self.seed = self._resolve_training_seed(seed)
         self.output_dir = OUTPUT_DIR if output_dir is None else Path(output_dir)
         self.evaluation_seeds = [int(local_seed) for local_seed in evaluation_seeds] if evaluation_seeds else [self.seed]
@@ -95,6 +98,7 @@ class ExperimentManager:
             hidden_sizes=self.hidden_sizes,
             batch_size=self.batch_size,
             batch_num=self.batch_num,
+            grad_clip_norm=self.grad_clip_norm,
             seed=self.seed,
             additive_noise=self.default_additive_noise,
             logic=self.logic,
@@ -127,6 +131,7 @@ class ExperimentManager:
             lr=self.lr,
             batch_size=self.batch_size,
             batch_num=self.batch_num,
+            grad_clip_norm=self.grad_clip_norm,
             seed=seed,
             output_dir=self.output_dir,
             evaluation_seeds=self.evaluation_seeds,
@@ -182,14 +187,17 @@ class ExperimentManager:
         return self.output_dir / 'debug_logs' / f'{Path(csv_name).stem}_seed_{self.seed}'
 
     @staticmethod
-    def _gradient_norm(policy: nn.Module) -> float:
+    def _gradient_norm_by_parameter(policy: nn.Module) -> Dict[str, float]:
+        norms: Dict[str, float] = {}
         total = 0.0
-        for parameter in policy.parameters():
+        for name, parameter in policy.named_parameters():
             if parameter.grad is None:
                 continue
             grad_norm = float(parameter.grad.detach().norm().item())
+            norms[name] = grad_norm
             total += grad_norm * grad_norm
-        return total ** 0.5
+        norms['total_gradient_norm'] = total ** 0.5
+        return norms
 
     @staticmethod
     def _sanitize_name(name: str) -> str:
@@ -211,58 +219,122 @@ class ExperimentManager:
         if not gradient_rows:
             return
         iterations = [int(row['iteration']) for row in gradient_rows]
-        values = [float(row['gradient_norm']) for row in gradient_rows]
+        ignored = {'iteration', 'total_accumulated_reward', 'eval_mean_return', 'eval_std_return'}
+        parameter_keys = [key for key in gradient_rows[0].keys() if key not in ignored]
         plt.switch_backend('Agg')
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        ax.plot(iterations, values, linewidth=2.0)
-        ax.set_xlabel('Iteration')
-        ax.set_ylabel('Gradient norm')
-        ax.set_title('Gradient Norm')
-        ax.grid(True)
-        fig.tight_layout()
-        fig.savefig(debug_dir / 'gradient_norms.png')
-        plt.close(fig)
+        for key in parameter_keys:
+            values = [float(row.get(key, 0.0)) for row in gradient_rows]
+            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+            ax.plot(iterations, values, linewidth=2.0)
+            ax.set_xlabel('Iteration')
+            ax.set_ylabel('Gradient norm')
+            ax.set_title(key)
+            ax.grid(True)
+            fig.tight_layout()
+            fig.savefig(debug_dir / f'gradient_norm_{self._sanitize_name(key)}.png')
+            plt.close(fig)
 
-    def _plot_weight_histograms(self, debug_dir: Path) -> None:
-        named_parameters = list(self.policy.named_parameters())
-        if not named_parameters:
+    def _plot_weight_histograms(self,
+                                debug_dir: Path,
+                                weight_snapshots: Sequence[Dict[str, Any]]) -> None:
+        if not weight_snapshots:
             return
         plt.switch_backend('Agg')
-        fig, axes = plt.subplots(len(named_parameters), 1, figsize=(10, 3 * len(named_parameters)))
-        if len(named_parameters) == 1:
-            axes = [axes]
-        for ax, (name, parameter) in zip(axes, named_parameters):
-            values = parameter.detach().cpu().reshape(-1).numpy()
-            ax.hist(values, bins=30, alpha=0.85)
-            ax.set_title(name)
-            ax.grid(True)
-        fig.tight_layout()
-        fig.savefig(debug_dir / 'weights_histograms.png')
-        plt.close(fig)
+        parameter_names = list(weight_snapshots[0]['weights'].keys())
+        for parameter_name in parameter_names:
+            snapshot_values = [
+                np.asarray(snapshot['weights'][parameter_name], dtype=float)
+                for snapshot in weight_snapshots
+            ]
+            if not snapshot_values:
+                continue
+            flat_values = np.concatenate(snapshot_values)
+            if flat_values.size == 0:
+                continue
+            bin_edges = np.histogram_bin_edges(flat_values, bins=30)
+            bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+            bin_width = float(bin_edges[1] - bin_edges[0]) if len(bin_edges) > 1 else 1.0
 
-    def _write_weight_snapshots(self, debug_dir: Path) -> None:
+            fig = plt.figure(figsize=(12, 8))
+            ax = fig.add_subplot(111, projection='3d')
+            for snapshot in weight_snapshots:
+                iteration = int(snapshot['iteration'])
+                counts, _ = np.histogram(snapshot['weights'][parameter_name], bins=bin_edges)
+                xs = bin_centers
+                ys = np.full_like(xs, float(iteration), dtype=float)
+                zs = np.zeros_like(xs, dtype=float)
+                ax.bar3d(
+                    xs,
+                    ys,
+                    zs,
+                    bin_width,
+                    max(1.0, 0.6 * weight_snapshots[-1]['iteration'] / max(len(weight_snapshots), 1)),
+                    counts.astype(float),
+                    shade=True,
+                    alpha=0.75,
+                )
+            ax.set_xlabel('Weight value')
+            ax.set_ylabel('Iteration')
+            ax.set_zlabel('Count')
+            ax.set_title(parameter_name)
+            fig.tight_layout()
+            fig.savefig(debug_dir / f'weights_hist_3d_{self._sanitize_name(parameter_name)}.png')
+            plt.close(fig)
+
+    def _write_weight_snapshots(self,
+                                debug_dir: Path,
+                                weight_snapshots: Sequence[Dict[str, Any]]) -> None:
         rows: List[Dict[str, Any]] = []
-        for name, parameter in self.policy.named_parameters():
-            flattened = parameter.detach().cpu().reshape(-1)
-            rows.append({
-                'parameter': name,
-                'mean': float(flattened.mean().item()),
-                'std': float(flattened.std(unbiased=False).item()),
-                'min': float(flattened.min().item()),
-                'max': float(flattened.max().item()),
-                'numel': int(flattened.numel()),
-            })
+        for snapshot in weight_snapshots:
+            iteration = int(snapshot['iteration'])
+            for parameter, values in snapshot['weights'].items():
+                flattened = np.asarray(values, dtype=float).reshape(-1)
+                rows.append({
+                    'iteration': iteration,
+                    'parameter': parameter,
+                    'mean': float(flattened.mean()),
+                    'std': float(flattened.std()),
+                    'min': float(flattened.min()),
+                    'max': float(flattened.max()),
+                    'numel': int(flattened.size),
+                })
         self._write_debug_csv(debug_dir / 'weight_stats.csv', rows)
+
+    def _capture_weight_snapshot(self) -> Dict[str, Any]:
+        weights: Dict[str, Any] = {}
+        for name, parameter in self.policy.named_parameters():
+            if not name.endswith('weight'):
+                continue
+            weights[name] = parameter.detach().cpu().reshape(-1).numpy().copy()
+        return {
+            'iteration': self._completed_iterations,
+            'weights': weights,
+        }
+
+    def _write_debug_metadata(self,
+                              debug_dir: Path,
+                              gradient_rows: Sequence[Dict[str, Any]]) -> None:
+        rows: List[Dict[str, Any]] = []
+        for row in gradient_rows:
+            rows.append({
+                'iteration': int(row['iteration']),
+                'total_accumulated_reward': float(row['total_accumulated_reward']),
+                'eval_mean_return': float(row['eval_mean_return']),
+                'eval_std_return': float(row['eval_std_return']),
+            })
+        self._write_debug_csv(debug_dir / 'debug_metrics.csv', rows)
 
     def _finalize_debug_logs(self,
                              csv_name: str,
-                             gradient_rows: Sequence[Dict[str, Any]]) -> None:
+                             gradient_rows: Sequence[Dict[str, Any]],
+                             weight_snapshots: Sequence[Dict[str, Any]]) -> None:
         debug_dir = self._debug_run_dir(csv_name)
         debug_dir.mkdir(parents=True, exist_ok=True)
         self._write_debug_csv(debug_dir / 'gradient_norms.csv', gradient_rows)
-        self._write_weight_snapshots(debug_dir)
+        self._write_debug_metadata(debug_dir, gradient_rows)
+        self._write_weight_snapshots(debug_dir, weight_snapshots)
         self._plot_gradient_norms(debug_dir, gradient_rows)
-        self._plot_weight_histograms(debug_dir)
+        self._plot_weight_histograms(debug_dir, weight_snapshots)
 
     @staticmethod
     def _temp_csv_path(summary_csv_path: Path, seed: int) -> Path:
@@ -363,6 +435,7 @@ class ExperimentManager:
             f"[ExperimentManager] train start "
             f"iterations={iterations} horizon={self.horizon} "
             f"batch_size={effective_batch_size} batch_num={effective_batch_num} "
+            f"grad_clip_norm={self.grad_clip_norm} "
             f"noise={self._describe_noise(effective_noise)} log_every={effective_log_every} "
             f"evaluation_mode={'exact' if self.exact_evaluation else 'approx'} "
             f"debug_logging={self.debug_logging} "
@@ -374,6 +447,7 @@ class ExperimentManager:
         chunk_histories: List[Dict[str, Any]] = []
         evaluation_rows: List[Dict[str, Any]] = []
         gradient_rows: List[Dict[str, Any]] = []
+        weight_snapshots: List[Dict[str, Any]] = []
 
         while remaining_iterations > 0:
             current_chunk = min(effective_log_every, remaining_iterations)
@@ -404,13 +478,15 @@ class ExperimentManager:
             })
             latest_training_return = self._returns_by_iteration(self._history)[self._completed_iterations]
             if self.debug_logging:
-                gradient_rows.append({
+                gradient_row = {
                     'iteration': self._completed_iterations,
                     'total_accumulated_reward': float(latest_training_return),
-                    'gradient_norm': self._gradient_norm(self.policy),
                     'eval_mean_return': float(eval_mean),
                     'eval_std_return': float(eval_std),
-                })
+                }
+                gradient_row.update(self._gradient_norm_by_parameter(self.policy))
+                gradient_rows.append(gradient_row)
+                weight_snapshots.append(self._capture_weight_snapshot())
             remaining_iterations -= current_chunk
 
         if write_csv:
@@ -450,7 +526,7 @@ class ExperimentManager:
             iterations=self._completed_iterations,
         )
         if self.debug_logging:
-            self._finalize_debug_logs(csv_name, gradient_rows)
+            self._finalize_debug_logs(csv_name, gradient_rows, weight_snapshots)
         evaluation_iterations = [int(row['iteration']) for row in evaluation_rows]
         evaluation_returns = [float(row['mean_over_seeds']) for row in evaluation_rows]
         elapsed = time.perf_counter() - start_time
@@ -754,6 +830,7 @@ class MultiSeedExperimentManager:
                  lr: float=1e-2,
                  batch_size: Optional[int]=None,
                  batch_num: int=1,
+                 grad_clip_norm: float=100.0,
                  output_dir: Optional[Path | str]=None,
                  verbose: bool=False,
                  exact_evaluation: bool=True,
@@ -774,6 +851,7 @@ class MultiSeedExperimentManager:
         self.lr = float(lr)
         self.batch_size = batch_size
         self.batch_num = int(batch_num)
+        self.grad_clip_norm = float(grad_clip_norm)
         self.output_dir = OUTPUT_DIR if output_dir is None else Path(output_dir)
         self.verbose = bool(verbose)
         self.exact_evaluation = bool(exact_evaluation)
@@ -804,6 +882,7 @@ class MultiSeedExperimentManager:
             lr=self.lr,
             batch_size=self.batch_size,
             batch_num=self.batch_num,
+            grad_clip_norm=self.grad_clip_norm,
             seed=seed,
             output_dir=self.output_dir,
             evaluation_seeds=self.evaluation_seeds,
@@ -905,6 +984,7 @@ class MultiSeedExperimentManager:
             f"evaluation_mode={'exact' if self.exact_evaluation else 'approx'} "
             f"evaluation_seeds={self.evaluation_seeds} iterations={iterations} horizon={self.horizon} "
             f"batch_size={effective_batch_size} batch_num={effective_batch_num} "
+            f"grad_clip_norm={self.grad_clip_norm} "
             f"noise={type(effective_noise).__name__ if effective_noise is not None else 'default'} "
             f"log_every={effective_log_every} verbose={self.verbose} "
             f"debug_logging={self.debug_logging} "

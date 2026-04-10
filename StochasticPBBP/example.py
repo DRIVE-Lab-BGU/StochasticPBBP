@@ -19,35 +19,40 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 def main() -> None:
     problem = "reservoir"
     instance_number = 3
-    num_random_policies = 1
+    num_random_policies = 3
     seed_start = 42
-    num_eval_seeds = 2
+    num_eval_seeds = 5
     eval_seeder = FibonacciSeeder(seed_start)
     evaluation_seeds = tuple(next(eval_seeder) for _ in range(num_eval_seeds))
     horizon = 100
     net_arc = (32, 32)
     lr = 1e-2
-    iterations = 100
+    iterations = 5000
     log_every = 20
     exact_evaluation = False
+    tnorm_weight = 100.0
+    grad_clip = 1000.0
 
     domain = os.path.join(PACKAGE_ROOT, 'problems', problem, 'domain.rddl')
     instance = os.path.join(PACKAGE_ROOT, 'problems', problem, 'instance_'+str(instance_number)+'.rddl')
     output_dir = os.path.join(PACKAGE_ROOT, 'outputs', problem+'_'+str(instance_number))
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
+
+    #################
+    # No noise
+    #################
     logic = FuzzyLogic(
         tnorm=ProductTNorm(),
-        comparison=SigmoidComparison(weight=100.0),
-        rounding=SoftRounding(weight=100.0),
-        control=SoftControlFlow(weight=100.0),
+        comparison=SigmoidComparison(weight=tnorm_weight),
+        rounding=SoftRounding(weight=tnorm_weight),
+        control=SoftControlFlow(weight=tnorm_weight),
         sampling=SoftRandomSampling(
             poisson_max_bins=100,
             binomial_max_bins=100,
             bernoulli_gumbel_softmax=False,
         ),
     )
-    template_rollout = TorchRollout(env.model, horizon=horizon, logic=logic)
 
     no_noise_manager = MultiSeedExperimentManager(
         domain=domain,
@@ -60,6 +65,7 @@ def main() -> None:
         lr=lr,
         output_dir=output_dir,
         debug_logging=True,
+        grad_clip_norm=grad_clip,
         logic=logic,
     )
     no_noise_manager.Train(
@@ -68,6 +74,21 @@ def main() -> None:
         log_every=log_every,
     )
 
+    #################
+    # Noise 1.0
+    #################
+    logic = FuzzyLogic(
+        tnorm=ProductTNorm(),
+        comparison=SigmoidComparison(weight=tnorm_weight),
+        rounding=SoftRounding(weight=tnorm_weight),
+        control=SoftControlFlow(weight=tnorm_weight),
+        sampling=SoftRandomSampling(
+            poisson_max_bins=100,
+            binomial_max_bins=100,
+            bernoulli_gumbel_softmax=False,
+        ),
+    )
+    template_rollout = TorchRollout(env.model, horizon=horizon, logic=logic)
     constant_noise = AdditiveNoiseFactory.create(
         noise_type='constant',
         std=1.0,
@@ -82,6 +103,7 @@ def main() -> None:
         horizon=horizon,
         hidden_sizes=net_arc,
         lr=lr,
+        grad_clip_norm=grad_clip,
         additive_noise=constant_noise,
         debug_logging=True,
         logic=logic,
@@ -92,6 +114,51 @@ def main() -> None:
         csv_name=problem+'_noise_1.csv',
         log_every=log_every,
     )
+
+    #################
+    # Noise 3.0
+    #################
+    logic = FuzzyLogic(
+        tnorm=ProductTNorm(),
+        comparison=SigmoidComparison(weight=tnorm_weight),
+        rounding=SoftRounding(weight=tnorm_weight),
+        control=SoftControlFlow(weight=tnorm_weight),
+        sampling=SoftRandomSampling(
+            poisson_max_bins=100,
+            binomial_max_bins=100,
+            bernoulli_gumbel_softmax=False,
+        ),
+    )
+    template_rollout = TorchRollout(env.model, horizon=horizon, logic=logic)
+    constant_noise = AdditiveNoiseFactory.create(
+        noise_type='constant',
+        std=3.0,
+        source=template_rollout,
+    )
+    noise_manager = MultiSeedExperimentManager(
+        domain=domain,
+        instance=instance,
+        num_random_policies=num_random_policies,
+        evaluation_seeds=evaluation_seeds,
+        exact_evaluation=exact_evaluation,
+        horizon=horizon,
+        hidden_sizes=net_arc,
+        lr=lr,
+        grad_clip_norm=grad_clip,
+        additive_noise=constant_noise,
+        debug_logging=True,
+        logic=logic,
+        output_dir=output_dir,
+    )
+    noise_manager.Train(
+        iterations,
+        csv_name=problem + '_noise_3.csv',
+        log_every=log_every,
+    )
+
+    #################
+    # Plot
+    #################
     plot_output_folder_summary(output_dir)
 
 
