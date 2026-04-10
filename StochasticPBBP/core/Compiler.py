@@ -96,10 +96,10 @@ class TorchRDDLCompiler:
         self.OPS = (self.logic.get_operator_dicts()
                     if hasattr(self.logic, 'get_operator_dicts')
                     else self.EXACT_OPS)
-        # here we set a flag to indicate whether the selected 
-        # logic backend is a relaxed/fuzzy logic that can emit soft 
-        # truth values in [0, 1], as opposed to strict boolean values.
-        self.uses_relaxed_logic = not isinstance(self.logic, ExactLogic)
+        # Import aliasing in local scripts/tests can produce multiple ExactLogic
+        # class identities (`core.Logic` vs `StochasticPBBP.core.Logic`). Treat
+        # backends by their semantic role rather than strict class identity.
+        self.uses_relaxed_logic = not self._is_exact_logic_backend(self.logic)
         self.use64bit = use64bit
 
         self.INT = torch.int64 if use64bit else torch.int32
@@ -121,6 +121,10 @@ class TorchRDDLCompiler:
         self.model_params: Dict[str, Any] = {}
         self.levels = None
         self.traced = None
+
+    @staticmethod
+    def _is_exact_logic_backend(backend: Any) -> bool:
+        return isinstance(backend, ExactLogic) or type(backend).__name__ == 'ExactLogic'
 
 
     # ------------------------------------------------------------------
@@ -186,20 +190,20 @@ class TorchRDDLCompiler:
         init_params: Dict[str, Any] = {}
         self.model_params = init_params
 
-        # Relaxed logic can emit soft truth values in [0, 1], so keep constraint
-        # expressions in their native backend dtype and only coerce to `bool`
-        # when the transition log is assembled.
-        constraint_dtype = None if self.uses_relaxed_logic else torch.bool
+
         
         # Compile invariants meaning the conditions that must hold in every state, 
-        # preconditions meaning the conditions that must hold for an action to be applicable,
+        
+
         # and terminations meaning the conditions that determine whether a state is terminal.
-        self.invariants = [self._torch(expr, init_params, dtype=constraint_dtype)
+        self.invariants = [self._torch(expr, init_params, dtype=torch.bool)
                            for expr in self.rddl.invariants]
         
-        self.preconditions = [self._torch(expr, init_params, dtype=constraint_dtype) for expr in self.rddl.preconditions]
+        # preconditions meaning the conditions that must hold for an action to be applicable.
+        self.preconditions = [self._torch(expr, init_params, dtype=torch.bool) for expr in self.rddl.preconditions]
         
-        self.terminations = [self._torch(expr, init_params, dtype=constraint_dtype) for expr in self.rddl.terminations]
+        # and terminations meaning the conditions that determine whether a state is terminal.        
+        self.terminations = [self._torch(expr, init_params, dtype=torch.bool) for expr in self.rddl.terminations]
         
         self.cpfs = self._compile_cpfs(init_params)
 
@@ -261,6 +265,11 @@ class TorchRDDLCompiler:
             #     'action': tensor(...),
             #     ...
             # }
+            precondition_check = True
+            for precond in preconds:
+                sample, key, err, model_params = precond(subs, model_params, key)
+                precondition_check = precondition_check and _to_bool(sample)
+                errors |= err
 
             # calculate CPFs in topological order
             for (name, cpf) in cpfs.items():
@@ -306,11 +315,7 @@ class TorchRDDLCompiler:
             
             #####################################################
 
-            precondition_check = True
-            for precond in preconds:
-                sample, key, err, model_params = precond(subs, model_params, key)
-                precondition_check = precondition_check and _to_bool(sample)
-                errors |= err
+
 
             invariant_check = True
             for invariant in invariants:
@@ -594,44 +599,12 @@ class TorchRDDLCompiler:
             tensor = tensor.to(dtype=self.REAL)
         return tensor
 
-    def _try_logic_eval(self, op_name: str, *args):
-        """Best-effort call into logic backend; return tensor-like value or None.
-
-        The logic API in this project has two styles:
-        1) runtime callables that consume tensors directly
-        2) factory methods `(id, init_params) -> callable`
-        When style (2) is encountered here, we skip it and fall back to raw torch ops.
-        """
-        if self.logic is None or not hasattr(self.logic, op_name):
-            return None
-
-        op = getattr(self.logic, op_name)
-        if not callable(op):
-            return None
-
-        try:
-            result = op(*args)
-        except Exception:
-            return None
-
-        # Some logic backends return `(value, params)`.
-        if isinstance(result, tuple):
-            if len(result) == 0:
-                return None
-            result = result[0]
-
-        # Factory-style API returns a callable, not a computed value.
-        if callable(result):
-            return None
-
-        if isinstance(result, torch.Tensor):
-            return result
-
-        tensor = self._ensure_tensor(result)
-        return tensor if isinstance(tensor, torch.Tensor) else None
-
     def _apply_unary(self, name: str, value: torch.Tensor):
-        """Apply unary ops using logic backend or fallback torch ops.
+        """Apply exact unary ops.
+
+        Relaxed/fuzzy unary operators are already intercepted earlier in the
+        compiler and bound through `self.OPS`. By the time execution reaches
+        this helper, the remaining path should be plain torch semantics.
 
         Args:
             name: Identifier of the unary operation.
@@ -644,9 +617,6 @@ class TorchRDDLCompiler:
             >>> compiler._apply_unary('neg', torch.tensor(1.))
             tensor(-1.)
         """
-        logic_value = self._try_logic_eval(name, value)
-        if logic_value is not None:
-            return logic_value
         if name == 'neg':
             return -value
         if name == 'logical_not':
@@ -654,7 +624,11 @@ class TorchRDDLCompiler:
         raise ValueError(f'Unsupported unary op {name}.')
 
     def _apply_binary(self, name: str, lhs: torch.Tensor, rhs: torch.Tensor):
-        """Apply binary operations with optional logic backend overrides.
+        """Apply exact binary operations.
+
+        Relaxed comparisons and logical operators are compiled via bound logic
+        callables before this helper is ever used. This helper therefore keeps
+        only the exact torch fallback behavior.
 
         Args:
             name: Operation identifier.
@@ -696,10 +670,6 @@ class TorchRDDLCompiler:
                 if rhs.shape[0] != 1:
                     rhs = rhs.unsqueeze(0)
                 rhs = rhs.expand((target,) + rhs.shape[1:])
-
-        logic_value = self._try_logic_eval(name, lhs, rhs)
-        if logic_value is not None:
-            return logic_value
         if name == 'add':
             return torch.add(lhs, rhs)
         if name == 'sub':
@@ -756,7 +726,11 @@ class TorchRDDLCompiler:
     def _apply_control_if(self, pred: torch.Tensor,
                           then_value: torch.Tensor,
                           else_value: torch.Tensor):
-        """Evaluate an `if` control expression using backend logic if available.
+        """Evaluate an exact `if` control expression.
+
+        Relaxed control flow is handled in `_torch_control` by binding the
+        backend-specific operator during compilation. This helper is only for
+        the exact branch.
 
         Args:
             pred: Predicate tensor.
@@ -778,15 +752,13 @@ class TorchRDDLCompiler:
             except Exception:
                 pred_val = False
             pred = torch.tensor(pred_val, dtype=self.REAL)
-        logic_value = self._try_logic_eval('control_if', pred, then_value, else_value)
-        if logic_value is None:
-            logic_value = self._try_logic_eval('if_then_else', pred, then_value, else_value)
-        if logic_value is not None:
-            return logic_value
         return torch.where(pred.to(dtype=self.REAL) > 0.5, then_value, else_value)
 
     def _apply_control_switch(self, pred: torch.Tensor, cases: torch.Tensor):
         """Select a case tensor according to the predicate index.
+
+        The fuzzy `switch` path is resolved earlier by `_torch_control`. This
+        helper preserves the exact gather-style semantics only.
 
         Args:
             pred: Tensor encoding the case index.
@@ -799,11 +771,6 @@ class TorchRDDLCompiler:
             >>> compiler._apply_control_switch(torch.tensor(1), torch.tensor([[0.], [2.]]))
             tensor(2.)
         """
-        logic_value = self._try_logic_eval('control_switch', pred, cases)
-        if logic_value is None:
-            logic_value = self._try_logic_eval('switch', pred, cases)
-        if logic_value is not None:
-            return logic_value
         pred_long = pred.to(dtype=torch.long).unsqueeze(0)
         reference = cases[:1]
         expanded_index = pred_long.expand_as(reference)
@@ -1224,7 +1191,10 @@ class TorchRDDLCompiler:
             f'Functional operator {op} is not supported.\n' + print_stack_trace(expr))
 
     def _apply_function_unary(self, op: str, value: torch.Tensor) -> torch.Tensor:
-        """Apply unary math ops with logic overrides when available.
+        """Apply exact unary math ops.
+
+        Relaxed variants such as `sgn`, `floor`, `round`, `ceil`, and `sqrt`
+        are intercepted in `_torch_functional` before reaching this helper.
 
         Args:
             op: Name of unary function (e.g., `sin`, `abs`).
@@ -1243,9 +1213,6 @@ class TorchRDDLCompiler:
             if not isinstance(tensor, torch.Tensor):
                 tensor = torch.as_tensor(tensor, dtype=self.REAL)
             return torch.sign(tensor)
-        logic_value = self._try_logic_eval(op, value)
-        if logic_value is not None:
-            return logic_value
         funcs = {
             'abs': torch.abs,
             'exp': torch.exp,
@@ -1275,7 +1242,10 @@ class TorchRDDLCompiler:
 
     def _apply_function_binary(self, op: str, lhs: torch.Tensor,
                                rhs: torch.Tensor) -> torch.Tensor:
-        """Apply binary math ops with logic overrides when available.
+        """Apply exact binary math ops.
+
+        Relaxed variants such as `div` and `mod` are intercepted in
+        `_torch_functional` and therefore never reach this helper.
 
         Args:
             op: Name of binary function (e.g., `min`, `pow`).
@@ -1289,9 +1259,6 @@ class TorchRDDLCompiler:
             >>> compiler._apply_function_binary('min', torch.tensor(1.), torch.tensor(2.))
             tensor(1.)
         """
-        logic_value = self._try_logic_eval(op, lhs, rhs)
-        if logic_value is not None:
-            return logic_value
         funcs = {
             'min': torch.minimum,
             'max': torch.maximum,
@@ -1542,6 +1509,23 @@ class TorchRDDLCompiler:
 
     def _sample_random_variable(self, name: str, values: List[torch.Tensor],
                                 generator: torch.Generator, expr) -> torch.Tensor:
+        
+        """ 
+            there is some "problem" but i dont think its a real problem.
+            g = torch.Generator().manual_seed(0)
+
+            torch.manual_seed(123)
+            a = sample_gumbel(loc, scale, g)
+
+            g = torch.Generator().manual_seed(0)
+            torch.manual_seed(456)
+            b = sample_gumbel(loc, scale, g)
+
+            # a != b   <-- bad ??
+
+            """
+        
+        
         if name == 'KronDelta': # checked
             sample = values[0].to(dtype=self.INT)
 
@@ -1560,6 +1544,10 @@ class TorchRDDLCompiler:
             # following the convention of mean and variance as parameters
             mean, var = torch.broadcast_tensors(values[0].to(self.REAL), values[1].to(self.REAL))
             #std = torch.sqrt(torch.clamp(var, min=1e-8))
+            if  torch.any(var < 0):
+                raise RDDLNotImplementedError(
+                    f'Normal distribution variance must be non-negative.\n' +
+                    print_stack_trace(expr))
             std= torch.sqrt(var)
             eps = torch.randn(mean.shape, generator=generator, device=mean.device, dtype=self.REAL)
             sample = mean + std * eps
@@ -1589,7 +1577,7 @@ class TorchRDDLCompiler:
             shape = torch.clamp(shape, min=1e-8)
             scale = torch.clamp(scale, min=1e-8)
             gamma = torch.distributions.Gamma(concentration=shape, rate=1.0)
-            sample = scale * gamma.sample(generator=generator)
+            sample = scale * gamma.sample()
         
         
         
@@ -1598,7 +1586,7 @@ class TorchRDDLCompiler:
             a = torch.clamp(a, min=1e-8)
             b = torch.clamp(b, min=1e-8)
             dist = torch.distributions.Beta(a, b)
-            sample = dist.sample(generator=generator)
+            sample = dist.sample()
         
 
         # TBD
