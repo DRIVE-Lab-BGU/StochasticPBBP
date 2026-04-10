@@ -1182,7 +1182,9 @@ class ExactLogic(Logic):
     def control_switch(self, id, init_params):
         def _torch_wrapped_calc_switch_exact(pred, cases, params):
             cases_t = torch.as_tensor(cases)
-            pred_t = torch.as_tensor(pred, dtype=self.INT, device=cases_t.device)
+            # `take_along_dim` requires int64/long indices even when the model
+            # itself is running in 32-bit integer mode.
+            pred_t = torch.as_tensor(pred, dtype=torch.long, device=cases_t.device)
             pred_t = pred_t.unsqueeze(0)
             sample = torch.take_along_dim(cases_t, pred_t, dim=0)  # deterministic gather
             assert sample.shape[0] == 1
