@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypedDict
 
 import torch
 
 from StochasticPBBP.core.Compiler import TorchRDDLCompiler
+
+
+class NoiseInfo(TypedDict):
+    type: str    # key with str value
+    value: float # key with float value
 
 @dataclass(frozen=True)
 class NoiseContext:
@@ -34,6 +40,11 @@ class AdditiveNoise(ABC):
     action dictionary with additive perturbations applied to floating-point
     tensors. Non-tensor and non-floating tensors are passed through unchanged.
     """
+
+    def __init__(self, seed: Optional[int]=None) -> None:
+        if seed is None:
+            seed = time.time_ns()
+        self.g = torch.Generator().manual_seed(seed)
 
     def __call__(self,
                  actions: Optional[Dict[str, Any]],
@@ -90,10 +101,13 @@ class NoAdditiveNoise(AdditiveNoise):
 class ConstantAdditiveNoise(AdditiveNoise):
     """Additive Gaussian noise with a constant standard deviation."""
 
-    def __init__(self, std: float) -> None:
+    def __init__(self, std: float, seed: Optional[int]=None) -> None:
         if std < 0:
             raise ValueError(f'std must be non-negative, got {std!r}.')
         self.std = float(std)
+        if seed is None:
+            seed = time.time_ns()
+        self.g = torch.Generator().manual_seed(seed)
 
     def sample_like(self,
                     reference: torch.Tensor,
@@ -102,7 +116,7 @@ class ConstantAdditiveNoise(AdditiveNoise):
         del context
         if self.std == 0.0:
             return torch.zeros_like(reference)
-        return torch.randn_like(reference) * self.std
+        return torch.empty_like(reference).normal_(generator=self.g) * self.std
 
 
 class LinearDecayAdditiveNoise(ConstantAdditiveNoise):

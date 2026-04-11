@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 import pyRDDLGym
 import matplotlib.pyplot as plt
+from StochasticPBBP.utils.Policies import NeuralStateFeedbackPolicy
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 print(f"PACKAGE_ROOT={PACKAGE_ROOT}")
@@ -22,6 +23,7 @@ from core.Train import Train
 from core.Logic import FuzzyLogic
 from utils.Noise import AdditiveNoiseFactory
 from utils.Policies import TensorDict
+from utils.Policies import NeuralStateFeedbackPolicy
 
 class state2action(nn.Module):
     def __init__(self,
@@ -169,16 +171,16 @@ class state2action(nn.Module):
 
 def main() -> None:
     domain = PACKAGE_ROOT / "problems" / "reservoir" / "domain.rddl"
-    instance = PACKAGE_ROOT / "problems" / "reservoir" / "instance_4.rddl"
+    instance = PACKAGE_ROOT / "problems" / "reservoir" / "instance_3.rddl"
 
     print(f"DOMAIN={domain}")
     print(f"INSTANCE={instance}")
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
-    horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "400"))
+    horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "200"))
     hidden_sizes = (12, 12)
-    iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "200"))
-    num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "10"))
+    iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "100"))
+    num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "1"))
     seed_offset = int(os.environ.get("NOISE_PLOT_SEED_OFFSET", "112"))
     batched_batch_size = int(os.environ.get("NOISE_PLOT_BATCH_SIZE", "5"))
     seeds = [seed_offset + 2*index for index in range(num_seeds)]
@@ -259,22 +261,34 @@ def main() -> None:
 
             if init_weights_fn == "jax":
                 init_weights_fn = init_weights_jax
-                policy = state2action(
+                # policy = state2action(
+                #     observation_template=observation_template,
+                #     action_template=action_template,
+                #     hidden_sizes=hidden_sizes,
+                # )
+                policy = NeuralStateFeedbackPolicy(
                     observation_template=observation_template,
                     action_template=action_template,
                     hidden_sizes=hidden_sizes,
+                    action_space=env.action_space,
                 )
 
                 policy.apply(init_weights_jax)
             else:
                 init_weights_fn = init_weights_xavier
-                policy = state2action(
+                policy = NeuralStateFeedbackPolicy(
                     observation_template=observation_template,
                     action_template=action_template,
-                    hidden_sizes=hidden_sizes,
+                    hidden_sizes=hidden_sizes
                 )
 
-                policy.apply(init_weights_xavier)
+                # policy = state2action(
+                #     observation_template=observation_template,
+                #     action_template=action_template,
+                #     hidden_sizes=hidden_sizes,
+                # )
+                #
+                # policy.apply(init_weights_xavier)
             from StochasticPBBP.core.Logic import (
             FuzzyLogic,
             SigmoidComparison,
@@ -431,6 +445,7 @@ def main() -> None:
             'std_training_returns': std_training_returns.tolist(),
             'var_training_returns': var_training_returns.tolist(),
         }
+
     ###########################
 
     #   torch without noise   #
@@ -499,15 +514,16 @@ def main() -> None:
     #          jax            #
 
     ###########################
-    start = time.perf_counter()
-    results_jax = run_jaxplan_experiment(
-        label='jax | no noise | batch=1',
-    )
+    # start = time.perf_counter()
+    # results_jax = run_jaxplan_experiment(
+    #     label='jax | no noise | batch=1',
+    # )
+    #
+    # end = time.perf_counter()
+    # elapsed = end - start
+    # print(f"Elapsed time: {elapsed:.6f} seconds jax no noise batch=1")
+    # ###########################
 
-    end = time.perf_counter()
-    elapsed = end - start
-    print(f"Elapsed time: {elapsed:.6f} seconds jax no noise batch=1")
-    ###########################
     plt.switch_backend("Agg")
     fig, axes = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
 
@@ -563,12 +579,12 @@ def main() -> None:
     #     color='tab:orange',
     #     linestyle='--',
     # )
-    plot_mean_with_std_band(
-        axes[0],
-        results_jax,
-        color='tab:green',
-        linestyle='-.',
-    )
+    # plot_mean_with_std_band(
+    #     axes[0],
+    #     results_jax,
+    #     color='tab:green',
+    #     linestyle='-.',
+    # )
     axes[0].set_ylabel('Training return')
     axes[0].set_title(
         f'Torch and Jax: with/without noise and with/without batch over {len(seeds)} seeds'
@@ -588,19 +604,19 @@ def main() -> None:
     #     color='tab:orange',
     #     linestyle='--',
     # )
-    plot_mean_with_std_band(
-        axes[1],
-        results_jax,
-        color='tab:green',
-        linestyle='-.',
-    )
-    axes[1].set_xlabel('Training iteration')
-    axes[1].set_ylabel('Training return')
-    axes[1].set_title(
-        f'Torch with batch vs Jax without batch over {len(seeds)} seeds'
-    )
-    axes[1].grid(True)
-    axes[1].legend()
+    # plot_mean_with_std_band(
+    #     axes[1],
+    #     results_jax,
+    #     color='tab:green',
+    #     linestyle='-.',
+    # )
+    # axes[1].set_xlabel('Training iteration')
+    # axes[1].set_ylabel('Training return')
+    # axes[1].set_title(
+    #     f'Torch with batch vs Jax without batch over {len(seeds)} seeds'
+    # )
+    # axes[1].grid(True)
+    # axes[1].legend()
 
     fig.tight_layout()
     output_path = PACKAGE_ROOT / "results_plot.png"
