@@ -150,7 +150,7 @@ class MBDPOPolicy(ABC):
 
 class NeuralStateFeedbackPolicy(MBDPOPolicy, nn.Module):
     def __init__(self, observation_template: TensorDict, action_template: TensorDict, action_space: Any,
-                 hidden_sizes: Tuple[int, ...] = (64, 64)) -> None:
+                 hidden_sizes: Tuple[int, ...] = (64, 64), seed: Optional[int]=None) -> None:
         super().__init__()
         if not observation_template:
             raise ValueError('observation_template must contain at least one tensor.')
@@ -161,6 +161,9 @@ class NeuralStateFeedbackPolicy(MBDPOPolicy, nn.Module):
         self.action_specs = self._build_action_specs(action_template, action_space)
         self.device = self.observation_specs[0]['device']
         self.dtype = torch.float32
+        self.g = None
+        if seed is not None:
+            self.g = torch.Generator().manual_seed(seed)
 
         layers = []
         input_dim = sum(spec['numel'] for spec in self.observation_specs)
@@ -187,12 +190,15 @@ class NeuralStateFeedbackPolicy(MBDPOPolicy, nn.Module):
                 return self.forward(observation)
         return self.forward(observation)
 
-    @staticmethod
-    def _init_weights_xavier(module: nn.Module) -> None:
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
+    def _init_weights_xavier(self, m):
+        if isinstance(m, nn.Linear):
+            if self.g is not None:
+                nn.init.xavier_uniform_(m.weight, generator=self.g)
+            else:
+                nn.init.xavier_uniform_(m.weight, generator=self.g)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+
 
     # def _apply_action_constraints(self,
     #                               raw_action: torch.Tensor,
