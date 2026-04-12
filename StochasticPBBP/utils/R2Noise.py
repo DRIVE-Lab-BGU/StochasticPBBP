@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -18,10 +19,13 @@ class R2GradientAdditiveNoise(AdditiveNoise):
     deviation profile from the cumulative-return gradient with respect to the
     executed action tensors:
 
-        sigma_i = scale * ||g||_inf / (|g_i| + eps)
+        r_i = |g_i| / (||g||_inf + eps)
+        sigma_i = min_std + (max_std - min_std) * (1 - r_i)^alpha
 
-    where `g` is the chosen action-gradient collection. The resulting std
-    tensors are then used in subsequent rollout calls through `context.step`.
+    where `g` is the chosen action-gradient collection. Smaller absolute
+    gradients therefore receive larger noise, while the resulting std tensors
+    remain bounded between `min_std` and `max_std`. Those std tensors are then
+    used in subsequent rollout calls through `context.step`.
     """
 
     def __init__(self,
@@ -30,6 +34,7 @@ class R2GradientAdditiveNoise(AdditiveNoise):
                  eps: float=1e-6,
                  min_std: float=0.0,
                  max_std: Optional[float]=None,
+                 alpha: float=1.0,
                  norm_scope: str='global',
                  fallback_noise: Optional[AdditiveNoise]=None) -> None:
         if scale < 0:
@@ -38,10 +43,17 @@ class R2GradientAdditiveNoise(AdditiveNoise):
             raise ValueError(f'eps must be positive, got {eps!r}.')
         if min_std < 0:
             raise ValueError(f'min_std must be non-negative, got {min_std!r}.')
-        if max_std is not None and max_std < min_std:
+        if max_std is None or not math.isfinite(max_std):
+            raise ValueError(
+                'R2GradientAdditiveNoise requires a finite max_std for the '
+                'bounded complement-of-normalized-gradient noise rule.'
+            )
+        if max_std < min_std:
             raise ValueError(
                 f'max_std must be greater than or equal to min_std, got {max_std!r} < {min_std!r}.'
             )
+        if alpha <= 0:
+            raise ValueError(f'alpha must be positive, got {alpha!r}.')
         #
         normalized_scope = norm_scope.strip().lower()
         if normalized_scope not in {'global', 'step'}:
@@ -52,7 +64,8 @@ class R2GradientAdditiveNoise(AdditiveNoise):
         self.scale = float(scale)
         self.eps = float(eps)
         self.min_std = float(min_std)
-        self.max_std = None if max_std is None else float(max_std)
+        self.max_std = float(max_std)
+        self.alpha = float(alpha)
         self.norm_scope = normalized_scope
         self.fallback_noise = NoAdditiveNoise() if fallback_noise is None else fallback_noise
         self._std_profile: TensorProfile = []
@@ -258,12 +271,21 @@ class R2GradientAdditiveNoise(AdditiveNoise):
                            inf_norm: float) -> torch.Tensor:
         abs_gradient = gradient.detach().abs()
         inf_norm_tensor = abs_gradient.new_tensor(float(inf_norm))
-        std_tensor = self.scale * inf_norm_tensor * abs_gradient
-        if self.min_std > 0.0:
-            std_tensor = std_tensor.clamp_min(self.min_std)
-        if self.max_std is not None:
-            std_tensor = std_tensor.clamp_max(self.max_std)
-        return std_tensor
+        normalizer = inf_norm_tensor + self.eps
+        # Normalize by the selected inf-norm so each action gets a stable score in [0, 1].
+        normalized_gradient = abs_gradient / normalizer
+        if inf_norm > 0.0:
+            normalized_gradient = torch.where(
+                abs_gradient == inf_norm_tensor,
+                torch.ones_like(normalized_gradient),
+                normalized_gradient,
+            )
+        normalized_gradient = normalized_gradient.clamp(0.0, 1.0)
+        # Map the complement so smaller gradients receive larger bounded noise.
+        complement = (1.0 - normalized_gradient).pow(self.alpha)
+        min_std_tensor = abs_gradient.new_tensor(self.min_std)
+        max_std_tensor = abs_gradient.new_tensor(self.max_std)
+        return min_std_tensor + (max_std_tensor - min_std_tensor) * complement
 
     @staticmethod
     def _gradient_inf_norm(gradients: Sequence[torch.Tensor]) -> float:
