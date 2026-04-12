@@ -141,9 +141,8 @@ class SigmoidComparison(Comparison):
             return sgn, params
 
         return _torch_wrapped_calc_sgn_approx
-######################################################################################################
-## returen argmax function i dont get it##############################################################
-#######################################################################################################
+
+
     # https://arxiv.org/abs/2110.05651
     def argmax(self, id, init_params):
         id_ = str(id)
@@ -193,7 +192,8 @@ class SoftRounding(Rounding):
 
     
     def floor(self, id, init_params):
-        """Soft floor that does not rely on mutable init_params keys."""
+        """Soft floor that does not rely on mutable init_params keys.
+           It does not support changing weights while running."""
         def _torch_wrapped_calc_floor_approx(x, params):
             x_t = torch.as_tensor(x)
             param = torch.as_tensor(self.weight, dtype=x_t.dtype, device=x_t.device)
@@ -205,7 +205,10 @@ class SoftRounding(Rounding):
         return _torch_wrapped_calc_floor_approx
 
     def round(self, id, init_params):
-        """Soft round that does not rely on mutable init_params keys."""
+        
+        """Soft round that does not rely on mutable init_params keys.
+           It does not support changing weights while running.
+        """
         def _torch_wrapped_calc_round_approx(x, params):
             x_t = torch.as_tensor(x)
             param = torch.as_tensor(self.weight, dtype=x_t.dtype, device=x_t.device)
@@ -472,9 +475,7 @@ class SoftRandomSampling(RandomSampling):
 
     def _poisson_gumbel_softmax(self, id, init_params, logic):
         argmax_approx = logic.argmax(id, init_params)
-        ##### here i need to understnad the poisson gumbel softmax
         def _torch_wrapped_calc_poisson_gumbel_softmax(key, rate, params):
-            # gen is torch.Generator object for random number generation
             gen = self._get_generator(key)
             rate_t = torch.as_tensor(rate, dtype=logic.REAL)
             ks = torch.arange(self.poisson_bins, dtype=logic.REAL, device=rate_t.device)
@@ -516,26 +517,35 @@ class SoftRandomSampling(RandomSampling):
             return sample, params
 
         return _torch_wrapped_calc_poisson_normal_approx
-
     def poisson(self, id, init_params, logic):
         if self.poisson_exp_method:
             _torch_wrapped_calc_poisson_diff = self._poisson_exponential(id, init_params, logic)
         else:
             _torch_wrapped_calc_poisson_diff = self._poisson_gumbel_softmax(id, init_params, logic)
         _torch_wrapped_calc_poisson_normal = self._poisson_normal_approx(logic)
-
         def _poisson_cdf_bins(rate_tensor: torch.Tensor) -> torch.Tensor:
             try:
                 dist = torch.distributions.Poisson(rate_tensor)
                 return dist.cdf(torch.tensor(self.poisson_bins, dtype=logic.REAL, device=rate_tensor.device))
             except Exception:
                 pass
+            
+            if hasattr(torch.special, "gammaincc"):
+                k_plus_one = torch.as_tensor(
+                    self.poisson_bins + 1,
+                    dtype=logic.REAL,
+                    device=rate_tensor.device,
+                )
+                return torch.special.gammaincc(k_plus_one, rate_tensor)
+
             if hasattr(torch.special, "gammainc"):
-                k_plus_one = torch.as_tensor(self.poisson_bins + 1, dtype=logic.REAL, device=rate_tensor.device)
-                lower = torch.special.gammainc(k_plus_one, rate_tensor)
-                gamma_func = torch.exp(torch.lgamma(k_plus_one))
-                lower_reg = lower / gamma_func
-                return 1.0 - lower_reg
+                k_plus_one = torch.as_tensor(
+                    self.poisson_bins + 1,
+                    dtype=logic.REAL,
+                    device=rate_tensor.device,
+                )
+                return 1.0 - torch.special.gammainc(k_plus_one, rate_tensor)
+
             return torch.ones_like(rate_tensor)  # fallback avoids crashing when cdf unavailable
 
         def _torch_wrapped_calc_poisson_approx(key, rate, params):
