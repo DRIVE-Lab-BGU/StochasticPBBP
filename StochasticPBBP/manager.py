@@ -45,14 +45,6 @@ class ExperimentManager:
         self.template_rollout = TorchRollout(self.env.model, horizon=self.horizon)
         _, self.observation_template, _ = self.template_rollout.reset()
 
-        # self.policy = NeuralStateFeedbackPolicy(
-        #     observation_template=observation_template,
-        #     action_template=template_rollout.noop_actions,
-        #     hidden_sizes=self.arch,
-        #     action_space=self.env.action_space,
-        #     seed=next(self.train_seeder)
-        # )
-
         self.logic = FuzzyLogic(
             tnorm=ProductTNorm(),
             comparison=SigmoidComparison(weight=fuzzy_weight),
@@ -65,30 +57,18 @@ class ExperimentManager:
             )
         )
 
-        # self.trainer = Train(
-        #     horizon=self.horizon,
-        #     model=self.env.model,
-        #     action_space=self.env.action_space,
-        #     policy=self.policy,
-        #     logic=self.logic,
-        #     lr=self.lr,
-        #     hidden_sizes=self.arch,  # why train need the network arch?!?
-        #     batch_size=self.horizon,
-        #     seed=self.seed,
-        #     additive_noise=AdditiveNoiseFactory.create(
-        #         noise_type=noise["type"],
-        #         std=noise["value"],
-        #         source=self.template_rollout,
-        #     ),
-        # )
 
 
     def run_experiment(self, iterations: int=100, log_frequency: int=10) -> None:
         iterations_axis: List[int] = []
         all_returns: List[List[float]] = []
+        i = 1
         for seed in range(self.seeds):
+            print("[INFO] Starting experiment {}, running {} iterations, with noise {}".format(i, iterations,
+                                                                                               self.noise["value"]))
             iterations_i, returns_i = self._run_single_experiment(iterations=iterations, log_frequency=log_frequency)
             all_returns.append(returns_i)
+            i = i + 1
         iterations_axis = iterations_i
         mean, std = self._average_over_returns(all_returns)
         return iterations_axis, mean, std
