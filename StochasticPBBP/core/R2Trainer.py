@@ -10,7 +10,7 @@ from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
 
 
 class R2TrainingPhase(str, Enum):
-    BOOTSTRAP = 'bootstrap' # initial phase with no updates, for profiling the initial policy
+    #BOOTSTRAP = 'bootstrap' # initial phase with no updates, for profiling the initial policy
     UPDATE = 'update' # standard policy-update phase with gradient steps and optimizer updates
     ANALYSIS = 'analysis' # post-update analysis phase with a fresh rollout and no gradient steps
     PROFILE_REFRESH = 'profile_refresh' # dedicated phase for refreshing the R2 noise profile from the analysis rollout, if applicable
@@ -61,7 +61,7 @@ class R2Trainer(Train):
             analysis_additive_noise
         )
         # By default, start with a no-noise profile for the update phase, which can be refreshed later based on the analysis rollout.
-        self.current_phase = R2TrainingPhase.BOOTSTRAP
+        #self.current_phase = R2TrainingPhase.BOOTSTRAP
         self.r2_profile: Optional[Any] = None
 
     def _validate_r2_batching(self, *, batch_size: int, batch_num: int) -> None:
@@ -163,6 +163,7 @@ class R2Trainer(Train):
         trace = analysis_result.get('trace')
         if trace is None:
             return None
+        # here the update for the profile happend
         return refresh(
             trace=trace,
             objective=analysis_result.get('objective'),
@@ -184,8 +185,11 @@ class R2Trainer(Train):
             self._resolve_analysis_additive_noise(analysis_additive_noise)
         )
 
-        if self.r2_profile is None:
-            self._set_phase(R2TrainingPhase.BOOTSTRAP)
+        # in the first iteration we dont have an R2 profile for the noise,
+        # so we start with the update phase to get an initial profile
+        # and then we can update the policy
+#        if self.r2_profile is None:
+#            self._set_phase(R2TrainingPhase.BOOTSTRAP)
 
         update_result = self._run_update_phase(
             iteration=iteration,
@@ -218,7 +222,7 @@ class R2Trainer(Train):
                          additive_noise: Optional[AdditiveNoise]=None,
                          analysis_additive_noise: Optional[AdditiveNoise]=None
                          ) -> Tuple[List[Dict[str, float]], nn.Module]:
-        del batch
+        del batch # delete the batch from the scopeto avoid warning unused agument
         effective_batch_size = self.default_batch_size if batch_size is None else (
             self._resolve_batch_size(batch_size)
         )

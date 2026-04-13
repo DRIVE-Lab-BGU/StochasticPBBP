@@ -186,7 +186,7 @@ class Train:
         trace = self.rollout(
             policy=self.policy,
             initial_subs=initial_subs,
-            model_params=model_params,# the params for logic?
+            model_params=model_params,# the params for logic
             policy_state=policy_state,
             steps=batch_steps,
             start_step=start_step,
