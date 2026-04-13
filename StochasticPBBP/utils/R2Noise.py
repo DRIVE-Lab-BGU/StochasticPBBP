@@ -115,6 +115,7 @@ class R2GradientAdditiveNoise(AdditiveNoise):
             context=context,
         )
         if std_tensor is None:
+            # if the std_tensor is None, fallback to the default noise - means 0 noise for this action, but we still want to apply the fallback noise if it exists (e.g. for exploration in the first iteration before we have a profile).
             fallback = self.fallback_noise.apply_to_value(
                 name=name,
                 value=cloned,
