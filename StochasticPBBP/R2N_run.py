@@ -16,12 +16,12 @@ from StochasticPBBP.core.Logic import (
     SoftRandomSampling,)       
 def main() -> None:
     hidden_sizes = (12, 12)
-    iterations = 350
-    print_every = 50
+    iterations = 50
+    print_every = 10
 
     package_root = Path(__file__).resolve().parent
     domain = package_root / "problems" / "reservoir" / "domain.rddl"
-    instance = package_root / "problems" / "reservoir" / "instance_4.rddl"
+    instance = package_root / "problems" / "reservoir" / "instance_1.rddl"
 
     env = pyRDDLGym.make(
         domain=str(domain),
@@ -29,7 +29,7 @@ def main() -> None:
         vectorized=True,
     )
     horizon = int(env.model.horizon)
-    horizon = 200
+    horizon = 5
     template_rollout = TorchRollout(env.model, horizon=horizon)
     _, observation_template, _ = template_rollout.reset()
 
@@ -49,8 +49,8 @@ def main() -> None:
         scale=1.0,
         eps=1e-6,
         min_std=2.0,
-        max_std=5.0,
-        alpha=0.01, # this make the exploration in the process of training , <1 mean more exploration and >1 mean less exploration.
+        max_std=4.0,
+        alpha= 1, # this make the exploration in the process of training , <1 mean more exploration and >1 mean less exploration.
         norm_scope='global',
     )
     logic = FuzzyLogic(
