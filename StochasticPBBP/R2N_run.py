@@ -16,7 +16,7 @@ from StochasticPBBP.core.Logic import (
     SoftRandomSampling,)       
 def main() -> None:
     hidden_sizes = (12, 12)
-    iterations = 50
+    iterations = 150
     print_every = 10
 
     package_root = Path(__file__).resolve().parent
@@ -29,10 +29,11 @@ def main() -> None:
         vectorized=True,
     )
     horizon = int(env.model.horizon)
-    horizon = 5
+    horizon = 200
     template_rollout = TorchRollout(env.model, horizon=horizon)
     _, observation_template, _ = template_rollout.reset()
-
+    ### TO UPDATE  ###
+    # NERUAL STATE FEEDBACK POLICY
     policy = StationaryMarkov(
         observation_template=observation_template,
         action_template=template_rollout.noop_actions,
@@ -48,9 +49,9 @@ def main() -> None:
     r2_noise = R2GradientAdditiveNoise(
         scale=1.0,
         eps=1e-6,
-        min_std=2.0,
-        max_std=4.0,
-        alpha= 1, # this make the exploration in the process of training , <1 mean more exploration and >1 mean less exploration.
+        min_std=1.0,
+        max_std=5.0,
+        alpha= 0.1, # this make the exploration in the process of training , <1 mean more exploration and >1 mean less exploration.
         norm_scope='global',
     )
     logic = FuzzyLogic(
