@@ -3,10 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import argparse
 import os
-import sys
 
 from StochasticPBBP.manager import ExperimentManager
-import matplotlib.pyplot as plt
 
 
 parser = argparse.ArgumentParser()
