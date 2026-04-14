@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Optional
 
 
 class BaseSeeder(ABC):
@@ -25,3 +26,9 @@ class FibonacciSeeder(BaseSeeder):
         next_value = self._previous + self._current
         self._previous, self._current = self._current, next_value
         return next_value
+
+    def reset(self, new_start_seed: Optional[int] = None) -> None:
+        if new_start_seed is not None:
+            self.start_seed = new_start_seed
+        self._previous = 0
+        self._current = self.start_seed

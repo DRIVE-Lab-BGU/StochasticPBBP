@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 
@@ -100,3 +100,53 @@ def plot_output_folder_summary(output_folder: Path | str,
     fig.savefig(target_path)
     plt.close(fig)
     return target_path
+
+
+def collapse_history_to_iterations(
+    history: List[Dict[str, Any]],
+    *,
+    label: str,
+    seed: int,
+) -> Tuple[List[int], List[float]]:
+    if not history:
+        raise ValueError(f'No training history was returned for {label}, seed={seed}.')
+
+    returns_by_iteration: Dict[int, float] = {}
+    chunks_by_iteration: Dict[int, int] = {}
+    expected_chunks: Optional[int] = None
+
+    for item in history:
+        iteration = int(item['iteration'])
+        num_chunks = int(item['num_chunks'])
+
+        if expected_chunks is None:
+            expected_chunks = num_chunks
+        elif expected_chunks != num_chunks:
+            raise ValueError(
+                f'Inconsistent num_chunks for {label}, seed={seed}: '
+                f'expected {expected_chunks}, got {num_chunks}.'
+            )
+
+        returns_by_iteration.setdefault(iteration, 0.0)
+        returns_by_iteration[iteration] += float(item['return'])
+        chunks_by_iteration[iteration] = chunks_by_iteration.get(iteration, 0) + 1
+
+    iteration_axis = sorted(returns_by_iteration)
+    expected_iteration_axis = list(range(1, len(history) + 1))
+    if iteration_axis != expected_iteration_axis:
+        raise ValueError(
+            f'Expected iterations {expected_iteration_axis[:3]}...{expected_iteration_axis[-3:]}, '
+            f'got {iteration_axis[:3]}...{iteration_axis[-3:]} '
+            f'for {label}, seed={seed}.'
+        )
+
+    assert expected_chunks is not None
+    for iteration in iteration_axis:
+        seen_chunks = chunks_by_iteration[iteration]
+        if seen_chunks != expected_chunks:
+            raise ValueError(
+                f'Expected {expected_chunks} chunks for iteration {iteration} in '
+                f'{label}, seed={seed}, got {seen_chunks}.'
+            )
+
+    return iteration_axis, [returns_by_iteration[iteration] for iteration in iteration_axis]

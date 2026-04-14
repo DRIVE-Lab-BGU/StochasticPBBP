@@ -1,94 +1,129 @@
 from __future__ import annotations
 
 from pathlib import Path
+import argparse
 import os
+import sys
 
 import pyRDDLGym
+from StochasticPBBP.manager import ExperimentManager
+import matplotlib.pyplot as plt
 
+import torch
+from core.Train import Train
 from StochasticPBBP.core.Rollout import TorchRollout
-from StochasticPBBP.manager import MultiSeedExperimentManager
+from StochasticPBBP.utils.Policies import NeuralStateFeedbackPolicy
+from StochasticPBBP.utils.helper import collapse_history_to_iterations
 from StochasticPBBP.utils.Noise import AdditiveNoiseFactory
-from StochasticPBBP.utils.helper import plot_output_folder_summary
-from StochasticPBBP.utils.seeder import FibonacciSeeder
 from StochasticPBBP.core.Logic import FuzzyLogic, SoftRounding, ProductTNorm, SigmoidComparison, SoftRandomSampling, SoftControlFlow
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--instance", type=int, default=2, help="instance number")
+parser.add_argument("--domain", type=str, default='reservoir', help="domain name")
+parser.add_argument("--seeds", type=int, default=2, help="number of seeds for training")
+parser.add_argument("--eval", type=int, default=5, help="number of averaging evaluations")
+parser.add_argument("--trainkey", type=int, default=112, help="start seed for the training seeds")
+parser.add_argument("--evalkey", type=int, default=42, help="start seed for the eval seeds")
+parser.add_argument("--horizon", type=int, default=200, help="number of steps in a rollout")
+parser.add_argument("--lr", type=float, default=0.01, help="RMSProp learning rate")
+parser.add_argument("--iterations", type=int, default=50, help="number of training iterations")
+parser.add_argument('--arch', nargs='+', type=int, default=(12, 12))
+parser.add_argument("--logfreq", type=int, default=10, help="log iteration frequency")
+parser.add_argument("--weight", type=float, default=100.0, help="t-norms approximation weight")
+parser.add_argument("--output", type=str, default="", help="the output directory, default is the output subfolder")
+parser.add_argument("--noisetype", type=str, default="constant", help="type of exploration noise")
+parser.add_argument("--noisestd", type=float, default=0.0, help="initial std of noise")
+parser.add_argument("--noisestdend", type=float, default=0.0, help="final std of noise")
+parser.add_argument("-e", "--exact", action="store_true", help="Exact evaluation mode - evaluate on a"
+                                                                " separate pyRDDLGym instance")
+args = parser.parse_args()
 PACKAGE_ROOT = Path(__file__).resolve().parent
 
 
-def main() -> None:
-    problem = "reservoir"
-    instance_number = 3
-    num_random_policies = 5
-    seed_start = 42
-    num_eval_seeds = 10
-    eval_seeder = FibonacciSeeder(seed_start)
-    evaluation_seeds = tuple(next(eval_seeder) for _ in range(num_eval_seeds))
-    horizon = 200
-    net_arc = (128, 64)
-    lr = 1e-2
-    iterations = 1000
-    log_every = 50
 
-    domain = os.path.join(PACKAGE_ROOT, 'problems', problem, 'domain.rddl')
-    instance = os.path.join(PACKAGE_ROOT, 'problems', problem, 'instance_'+str(instance_number)+'.rddl')
-    output_dir = os.path.join(PACKAGE_ROOT, 'outputs', problem+'_'+str(instance_number))
+def main(args) -> None:
+    domain = os.path.join(PACKAGE_ROOT, 'problems', args.domain, 'domain.rddl')
+    instance = os.path.join(PACKAGE_ROOT, 'problems', args.domain, 'instance_' + str(args.instance) + '.rddl')
+    if args.output == "":
+        output_dir = os.path.join(PACKAGE_ROOT, 'outputs', args.domain + '_' + str(args.instance))
+    else:
+        output_dir = args.output
+    args.exact = True
 
-    env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
-    logic = FuzzyLogic(
-        tnorm=ProductTNorm(),
-        comparison=SigmoidComparison(weight=100.0),
-        rounding=SoftRounding(weight=100.0),
-        control=SoftControlFlow(weight=100.0),
-        sampling=SoftRandomSampling(
-            poisson_max_bins=100,
-            binomial_max_bins=100,
-            bernoulli_gumbel_softmax=False,
-        ),
-    )
-    template_rollout = TorchRollout(env.model, horizon=horizon, logic=logic)
+    returns = []
+    stds = []
+    colors = []
+    labels = []
 
-    no_noise_manager = MultiSeedExperimentManager(
-        domain=domain,
-        instance=instance,
-        num_random_policies=num_random_policies,
-        evaluation_seeds=evaluation_seeds,
-        horizon=horizon,
-        hidden_sizes=net_arc,
-        lr=lr,
-        output_dir=output_dir,
-        logic=logic,
-    )
-    no_noise_manager.Train(
-        iterations,
-        csv_name=problem+'_no_noise.csv',
-        log_every=log_every,
-    )
+    noise = {"type": "constant", "value":0.0}
+    manager = ExperimentManager(domain=domain, instance=instance,seed=args.trainkey, horizon=args.horizon,
+                                seeds=args.seeds, fuzzy_weight=args.weight, learning_rate=args.lr, noise=noise,
+                                eval_seed=args.evalkey, eval_seeds=args.eval, exact_eval_mode=args.exact,
+                                output_folder=output_dir)
+    iterations0, returns0, stds0 = manager.run_experiment(iterations=args.iterations, log_frequency=args.logfreq)
+    returns.append(returns0)
+    stds.append(stds0)
+    colors.append("green")
+    labels.append("w/o noise")
 
-    constant_noise = AdditiveNoiseFactory.create(
-        noise_type='constant',
-        std=1.0,
-        source=template_rollout,
+    noise = {"type": "constant", "value": 1.0}
+    manager = ExperimentManager(domain=domain, instance=instance, seed=args.trainkey, horizon=args.horizon,
+                                seeds=args.seeds, fuzzy_weight=args.weight, learning_rate=args.lr, noise=noise,
+                                eval_seed=args.evalkey, eval_seeds=args.eval, exact_eval_mode=args.exact,
+                                output_folder=output_dir)
+    _, returns1, stds1 = manager.run_experiment(iterations=args.iterations, log_frequency=args.logfreq)
+    returns.append(returns1)
+    stds.append(stds1)
+    colors.append("red")
+    labels.append("noise=1.0")
+
+    noise = {"type": "constant", "value": 3.0}
+    manager = ExperimentManager(domain=domain, instance=instance, seed=args.trainkey, horizon=args.horizon,
+                                seeds=args.seeds, fuzzy_weight=args.weight, learning_rate=args.lr, noise=noise,
+                                eval_seed=args.evalkey, eval_seeds=args.eval, exact_eval_mode=args.exact,
+                                output_folder=output_dir)
+    _, returns3, stds3 = manager.run_experiment(iterations=args.iterations, log_frequency=args.logfreq)
+    returns.append(returns3)
+    stds.append(stds3)
+    colors.append("blue")
+    labels.append("noise=3.0")
+
+
+    plt.switch_backend("Agg")
+    fig, axis = plt.subplots(1, 1, figsize=(12, 10), sharex=True)
+
+    axis.set_ylabel('Training return')
+    axis.set_title(
+        f'Noise={noise["value"]} vs no noise'
     )
-    noise_manager = MultiSeedExperimentManager(
-        domain=domain,
-        instance=instance,
-        num_random_policies=num_random_policies,
-        evaluation_seeds=evaluation_seeds,
-        horizon=horizon,
-        hidden_sizes=net_arc,
-        lr=lr,
-        additive_noise=constant_noise,
-        logic=logic,
-        output_dir=output_dir,
-    )
-    noise_manager.Train(
-        iterations,
-        csv_name=problem+'_noise_1.csv',
-        log_every=log_every,
-    )
-    plot_output_folder_summary(output_dir)
+    for mean, std, col, label in zip(returns, stds, colors, labels):
+        lower = [m - s for (m, s) in zip(mean, std)]
+        upper = [m + s for (m, s) in zip(mean, std)]
+        axis.plot(
+            iterations0,
+            mean,
+            color=col,
+            linestyle='-',
+            linewidth=2.0,
+            label=label,
+        )
+        axis.fill_between(
+            iterations0,
+            lower,
+            upper,
+            color=col,
+            alpha=0.18,
+        )
+    axis.grid(True)
+    axis.legend()
+    fig.tight_layout()
+    output_path = PACKAGE_ROOT / "results_plot2.png"
+    fig.savefig(output_path)
+
+
+
 
 
 if __name__ == '__main__':
-    main()
+    main(args)
