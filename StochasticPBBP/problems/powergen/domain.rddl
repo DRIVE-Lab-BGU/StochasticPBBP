@@ -68,11 +68,11 @@ domain power_gen {
 		effectiveProd(plant) : { interm-fluent, real };
 		curOn(plant) : { interm-fluent, real };
 	};
-
+	// Weibull(PROD-SHAPE(?p), PROD-SCALE(?p)) can make all to get nan
 	cpfs {
 		// State - now prod is zeroed if not on
 		curOn(?p) = 1/(1+exp[-1/TAU*(curProd(?p) - PROD-UNITS-MIN(?p))]);
-        effectiveProd(?p) = curOn(?p)*(max[min[curProd(?p) + Weibull(PROD-SHAPE(?p), PROD-SCALE(?p)),
+        effectiveProd(?p) = curOn(?p)*(max[min[curProd(?p) + Weibull(PROD-SHAPE(?p), PROD-SCALE(?p)), 
 				PROD-UNITS-MAX(?p)], PROD-UNITS-MIN(?p)]);
 		prevProd'(?p) = effectiveProd(?p);
 		prevOn'(?p) = curOn(?p);

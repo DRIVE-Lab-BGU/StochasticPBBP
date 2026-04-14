@@ -9,11 +9,11 @@ non-fluents nf_reservoir_control_cont_1c {
 		MIN_LEVEL(t1) = 21.54543539150386;
 		MAX_LEVEL(t1) = 138.5025169414638;
 		TOP_RES(t1) = 175.8977600780484;
-		RAIN_VAR(t1) = 0.0;
+		RAIN_VAR(t1) = 5.0;
 		MIN_LEVEL(t2) = 69.82934008911755;
 		MAX_LEVEL(t2) = 128.80327030045743;
 		TOP_RES(t2) = 139.28609654370416;
-		RAIN_VAR(t2) = 0.0;
+		RAIN_VAR(t2) = 5.0;
 	};
 }
 instance inst_reservoir_control_cont_1c {
