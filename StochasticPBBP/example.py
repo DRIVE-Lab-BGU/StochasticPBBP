@@ -19,10 +19,10 @@ from StochasticPBBP.core.Logic import FuzzyLogic, SoftRounding, ProductTNorm, Si
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--instance", type=int, default=5, help="instance number")
+parser.add_argument("--instance", type=int, default=3, help="instance number")
 parser.add_argument("--domain", type=str, default='reservoir', help="domain name")
 parser.add_argument("--seeds", type=int, default=5, help="number of seeds for training")
-parser.add_argument("--eval", type=int, default=1, help="number of averaging evaluations")
+parser.add_argument("--eval", type=int, default=5, help="number of averaging evaluations")
 parser.add_argument("--trainkey", type=int, default=112, help="start seed for the training seeds")
 parser.add_argument("--evalkey", type=int, default=42, help="start seed for the eval seeds")
 parser.add_argument("--horizon", type=int, default=200, help="number of steps in a rollout")
@@ -41,7 +41,8 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 def main(args) -> None:
     domain = os.path.join(PACKAGE_ROOT, 'problems', args.domain, 'domain.rddl')
     instance = os.path.join(PACKAGE_ROOT, 'problems', args.domain, 'instance_' + str(args.instance) + '.rddl')
-    output_dir = os.path.join(PACKAGE_ROOT, 'outputs', args.domain + '_' + str(args.instance))
+    # output_dir = os.path.join(PACKAGE_ROOT, 'outputs', args.domain + '_' + str(args.instance))
+    args.exact = True
 
     returns = []
     stds = []
@@ -50,16 +51,18 @@ def main(args) -> None:
 
     noise = {"type": "constant", "value":0.0}
     manager = ExperimentManager(domain=domain, instance=instance,seed=args.trainkey, horizon=args.horizon,
-                                seeds=args.seeds, fuzzy_weight=args.weight, learning_rate=args.lr, noise=noise)
+                                seeds=args.seeds, fuzzy_weight=args.weight, learning_rate=args.lr, noise=noise,
+                                eval_seed=args.evalkey, eval_seeds=args.eval, exact_eval_mode=args.exact)
     iterations0, returns0, stds0 = manager.run_experiment(iterations=args.iterations, log_frequency=args.logfreq)
     returns.append(returns0)
     stds.append(stds0)
     colors.append("green")
     labels.append("w/o noise")
 
-    noise = {"type": "constant", "value": 3.0}
+    noise = {"type": "constant", "value": 1.0}
     manager = ExperimentManager(domain=domain, instance=instance, seed=args.trainkey, horizon=args.horizon,
-                                seeds=args.seeds, fuzzy_weight=args.weight, learning_rate=args.lr, noise=noise)
+                                seeds=args.seeds, fuzzy_weight=args.weight, learning_rate=args.lr, noise=noise,
+                                eval_seed=args.evalkey, eval_seeds=args.eval, exact_eval_mode=args.exact)
     _, returns1, stds1 = manager.run_experiment(iterations=args.iterations, log_frequency=args.logfreq)
     returns.append(returns1)
     stds.append(stds1)
@@ -68,7 +71,8 @@ def main(args) -> None:
 
     noise = {"type": "constant", "value": 3.0}
     manager = ExperimentManager(domain=domain, instance=instance, seed=args.trainkey, horizon=args.horizon,
-                                seeds=args.seeds, fuzzy_weight=args.weight, learning_rate=args.lr, noise=noise)
+                                seeds=args.seeds, fuzzy_weight=args.weight, learning_rate=args.lr, noise=noise,
+                                eval_seed=args.evalkey, eval_seeds=args.eval, exact_eval_mode=args.exact)
     _, returns3, stds3 = manager.run_experiment(iterations=args.iterations, log_frequency=args.logfreq)
     returns.append(returns3)
     stds.append(stds3)

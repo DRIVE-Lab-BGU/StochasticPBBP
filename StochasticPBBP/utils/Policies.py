@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import math
+import shutil
 from typing import Any, Dict, List, Optional, Tuple
 from abc import ABC, abstractmethod
+import numpy as np
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
+from pyRDDLGym.core.env import RDDLEnv
 from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
+from StochasticPBBP.utils.seeder import BaseSeeder
 
 TensorDict = Dict[str, torch.Tensor]
 
@@ -52,6 +56,108 @@ class MBDPOPolicy(ABC):
     def reset(self) -> None:
         '''Resets the policy and prepares it for the next episode/rollout.'''
         pass
+
+    def evaluate(self, env:RDDLEnv, episodes: int=1, verbose: bool=False, render: bool=False,
+                 seed_generator: Optional[BaseSeeder]=None) -> List[float]:
+        if not env.vectorized:
+            raise ValueError(f'RDDLEnv vectorized flag must be turned on for MBDPO type policy')
+
+        gamma = env.discount
+
+        # get terminal width
+        if verbose:
+            width = shutil.get_terminal_size().columns
+            sep_bar = '-' * width
+
+        # start simulation
+        history = np.zeros((episodes,))
+        for episode in range(episodes):
+
+            # restart episode
+            total_reward, cuml_gamma = 0.0, 1.0
+            self.reset()
+            if seed_generator is not None:
+                state, _ = env.reset(seed=next(seed_generator))
+
+            # printing
+            if verbose:
+                print(f'initial state = \n{self._format(state, width)}')
+
+            # simulate to end of horizon
+            for step in range(env.horizon):
+                if render:
+                    env.render()
+
+                # take a step in the environment
+                state = self._unpack_observation(state)
+                action = self.sample_action(observation=state, training_mode=False)
+                action = self._action_to_env_dict(action)
+                next_state, reward, terminated, truncated, _ = env.step(action)
+                total_reward += reward * cuml_gamma
+                cuml_gamma *= gamma
+                done = terminated or truncated
+
+                # printing
+                if verbose:
+                    print(f'{sep_bar}\n'
+                          f'step   = {step}\n'
+                          f'action = \n{self._format(action, width)}\n'
+                          f'state  = \n{self._format(next_state, width)}\n'
+                          f'reward = {reward}\n'
+                          f'done   = {done}')
+
+                state = next_state
+                if done:
+                    break
+
+            if verbose:
+                print(f'\n'
+                      f'episode {episode + 1} ended with return {total_reward}\n'
+                      f'{"=" * width}')
+
+            history[episode] = total_reward
+
+            # summary statistics
+        return {
+            'mean': np.mean(history),
+            'median': np.median(history),
+            'min': np.min(history),
+            'max': np.max(history),
+            'std': np.std(history)
+        }
+
+    def _format(self, state, width=80, indent=4):
+        if len(state) == 0:
+            return str(state)
+        state = {key: str(value) for (key, value) in state.items()}
+        klen = max(map(len, state.keys())) + 1
+        vlen = max(map(len, state.values())) + 1
+        cols = max(1, (width - indent) // (klen + vlen + 3))
+        result = ' ' * indent
+        for (count, (key, value)) in enumerate(state.items(), 1):
+            result += f'{key.rjust(klen)} = {value.ljust(vlen)}'
+            if count % cols == 0:
+                result += '\n' + ' ' * indent
+        return result
+
+    def _unpack_observation(self, reset_result: Any) -> Dict[str, Any]:
+        if isinstance(reset_result, tuple):
+            if not reset_result:
+                raise ValueError('env.reset() returned an empty tuple.')
+            return reset_result[0]
+        return reset_result
+
+    def _action_to_env_dict(self, action: Dict[str, Any]) -> Dict[str, Any]:
+        env_action: Dict[str, Any] = {}
+        for name, value in action.items():
+            if isinstance(value, torch.Tensor):
+                detached = value.detach().cpu()
+                env_action[name] = detached.item() if detached.numel() == 1 else detached.numpy()
+            else:
+                env_action[name] = value
+        return env_action
+
+
 
     @staticmethod
     def _as_tensor(value: Any, *, dtype: Optional[torch.dtype] = None,
@@ -228,7 +334,7 @@ class NeuralStateFeedbackPolicy(MBDPOPolicy, nn.Module):
 
 
 
-class random_policy:
+class random_policy_old:
     def __init__(self, model, logic, noise=None):
         self.model = model
         self.logic = logic
