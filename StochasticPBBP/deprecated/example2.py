@@ -6,7 +6,7 @@ import os
 import pyRDDLGym
 
 from StochasticPBBP.core.Rollout import TorchRollout
-from StochasticPBBP.manager2 import MultiSeedExperimentManager
+from StochasticPBBP.deprecated.manager2 import MultiSeedExperimentManager
 from StochasticPBBP.utils.Noise import AdditiveNoiseFactory
 from StochasticPBBP.utils.helper import plot_output_folder_summary
 from StochasticPBBP.utils.seeder import FibonacciSeeder
@@ -33,9 +33,9 @@ def main() -> None:
     tnorm_weight = 50.0
     grad_clip = 1000000.0
 
-    domain = os.path.join(PACKAGE_ROOT, 'problems', problem, 'domain.rddl')
-    instance = os.path.join(PACKAGE_ROOT, 'problems', problem, 'instance_'+str(instance_number)+'.rddl')
-    output_dir = os.path.join(PACKAGE_ROOT, 'outputs', problem+'_'+str(instance_number))
+    domain = os.path.join(PACKAGE_ROOT, '../problems', problem, 'domain.rddl')
+    instance = os.path.join(PACKAGE_ROOT, '../problems', problem, 'instance_' + str(instance_number) + '.rddl')
+    output_dir = os.path.join(PACKAGE_ROOT, '../outputs', problem + '_' + str(instance_number))
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
 
