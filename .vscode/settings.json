@@ -1,0 +1,8 @@
+{
+  "python-envs.defaultEnvManager": "ms-python.python:system",
+  "python-envs.defaultPackageManager": "ms-python.python:pip",
+  "debugpy.debugJustMyCode": false,
+  "terminal.integrated.env.osx": {
+    "PYTHONPATH": "/Users/yuvalaroosh/StochasticPBBP"
+  }
+}
