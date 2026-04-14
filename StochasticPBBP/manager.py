@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TypedDict
 import time
@@ -15,6 +16,7 @@ from StochasticPBBP.utils.helper import collapse_history_to_iterations
 from StochasticPBBP.utils.seeder import FibonacciSeeder
 from StochasticPBBP.utils.Noise import AdditiveNoiseFactory, NoiseInfo
 from StochasticPBBP.core.Logic import FuzzyLogic, SoftRounding, ProductTNorm, SigmoidComparison, SoftRandomSampling, SoftControlFlow
+from StochasticPBBP.utils.logger import CSVLogger
 
 
 
@@ -30,7 +32,8 @@ class ExperimentManager:
                  fuzzy_weight: float=50.0,
                  learning_rate: float=0.01,
                  noise: Optional[NoiseInfo]=None,
-                 exact_eval_mode=False) -> None:
+                 exact_eval_mode=False,
+                 output_folder=None) -> None:
         self.env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
         self.env.horizon = horizon
         self.horizon = horizon
@@ -41,6 +44,8 @@ class ExperimentManager:
         self.eval_seed = eval_seed
         self.eval_seeds = eval_seeds
         self.exact_eval_mode = exact_eval_mode
+        self.logger = None
+        self.output_folder = output_folder
 
         seed_start = int(str(time.time_ns())[10:13])
         self.train_seeder = FibonacciSeeder(seed_start)
@@ -85,6 +90,19 @@ class ExperimentManager:
             iterations_axis = iterations_i
             mean, std = self._average_over_returns(all_returns)
         return iterations_axis, mean, std
+
+    def log(self, file_name, iterations, returns, stds):
+        data = {}
+        headers = ["iteration", "mean", "std"]
+        data[headers[0]] = iterations
+        data[headers[1]] = returns
+        data[headers[2]] = stds
+
+        if self.logger is None:
+            csv_output_file = os.path.join(self.output_folder, "run_logs", file_name)
+            self.logger = CSVLogger(csv_file_name=csv_output_file)
+        self.logger.write_CSV(data=data, headers=headers)
+        pass
 
     def _average_over_returns(self, returns: List[List[float]]) -> List[float]:
         rows_avg = np.mean(returns, axis=0)
