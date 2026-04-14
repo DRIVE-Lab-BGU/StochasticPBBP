@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -150,3 +151,43 @@ def collapse_history_to_iterations(
             )
 
     return iteration_axis, [returns_by_iteration[iteration] for iteration in iteration_axis]
+
+
+def plot_csv_curves_from_folder(folder_path, output_file=None):
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for file_name in sorted(os.listdir(folder_path)):
+        if not file_name.endswith(".csv"):
+            continue
+
+        file_path = os.path.join(folder_path, file_name)
+        iterations = []
+        returns = []
+        stds = []
+
+        with open(file_path, "r", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                iterations.append(float(row["iteration"]))
+                returns.append(float(row["mean"]))
+                stds.append(float(row["std"]))
+
+        lower = [r - s for r, s in zip(returns, stds)]
+        upper = [r + s for r, s in zip(returns, stds)]
+        label = os.path.splitext(file_name)[0]
+
+        ax.plot(iterations, returns, label=label)
+        ax.fill_between(iterations, lower, upper, alpha=0.2)
+
+    ax.set_xlabel("iterations")
+    ax.set_ylabel("returns")
+    ax.set_title("Returns with std envelope")
+    ax.legend()
+    ax.grid(True)
+
+    if output_file is not None:
+        plt.savefig(output_file, bbox_inches="tight")
+    else:
+        plt.show()
+
+
