@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pyRDDLGym
+import torch
 
 from StochasticPBBP.core.R2Trainer import R2Trainer
 from StochasticPBBP.core.Rollout import TorchRollout
@@ -14,6 +15,27 @@ from StochasticPBBP.core.Logic import (
     SoftRounding,    
     SoftControlFlow ,
     SoftRandomSampling,)       
+class CustomR2Noise(R2GradientAdditiveNoise):
+    def _std_from_gradient(self, *, gradient, inf_norm):
+        abs_gradient = gradient.detach().abs()
+        inf_norm_tensor = abs_gradient.new_tensor(float(inf_norm))
+        normalizer = inf_norm_tensor + self.eps
+        # Normalize by the selected inf-norm so each action gets a stable score in [0, 1].
+        normalized_gradient = abs_gradient / normalizer
+        if inf_norm > 0.0:
+            normalized_gradient = torch.where(
+                abs_gradient == inf_norm_tensor,
+                torch.ones_like(normalized_gradient),
+                normalized_gradient,
+            )
+        normalized_gradient = normalized_gradient.clamp(0.0, 1.0)
+        # Map the complement so smaller gradients receive larger bounded noise.
+        complement = (1.0 - normalized_gradient).pow(self.alpha)
+        min_std_tensor = abs_gradient.new_tensor(self.min_std)
+        max_std_tensor = abs_gradient.new_tensor(self.max_std)
+        return min_std_tensor + (max_std_tensor - min_std_tensor) * complement
+
+
 def main() -> None:
     hidden_sizes = (12, 12)
     iterations = 150
@@ -46,7 +68,7 @@ def main() -> None:
         std=0.0,
         source=template_rollout,
     )
-    r2_noise = R2GradientAdditiveNoise(
+    r2_noise = CustomR2Noise(
         scale=1.0,
         eps=1e-6,
         min_std=1.0,
