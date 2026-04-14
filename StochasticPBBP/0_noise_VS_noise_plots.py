@@ -177,12 +177,11 @@ def main() -> None:
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
     horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "400"))
     hidden_sizes = (12, 12)
-    iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "200"))
-    num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "10"))
+    iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "100"))
+    num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "3"))
     seed_offset = int(os.environ.get("NOISE_PLOT_SEED_OFFSET", "112"))
-    batched_batch_size = int(os.environ.get("NOISE_PLOT_BATCH_SIZE", "5"))
     seeds = [seed_offset + 2*index for index in range(num_seeds)]
-
+    print_every =50
     template_rollout = TorchRollout(env.model, horizon=horizon)
     _, observation_template, _ = template_rollout.reset()
     action_template = template_rollout.noop_actions
@@ -247,13 +246,20 @@ def main() -> None:
             nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
-    
+    def init_weights_jax_like(m):
+        if isinstance(m, nn.Linear):
+            fan_in = m.weight.size(1)
+            std = (2.0 / fan_in) ** 0.5
+            nn.init.trunc_normal_(m.weight, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+        
     def run_experiment(noise_value: float, label: str, batch_size: int=1 , init_weights_fn: str = "jax") -> Dict[str, Any]:
         all_training_returns: List[List[float]] = []
         iteration_axis: List[int] = []
         import torch.nn as nn
 
-
+        num_runs_do = 0
         for seed in seeds:
             torch.manual_seed(seed)
 
@@ -267,7 +273,7 @@ def main() -> None:
 
                 policy.apply(init_weights_jax)
             else:
-                init_weights_fn = init_weights_xavier
+                init_weights_fn = init_weights_jax_like
                 policy = state2action(
                     observation_template=observation_template,
                     action_template=action_template,
@@ -285,9 +291,9 @@ def main() -> None:
             )
             logic = FuzzyLogic(
                 tnorm=ProductTNorm(),
-                comparison=SigmoidComparison(weight=50.0),
-                rounding=SoftRounding(weight=50.0),
-                control=SoftControlFlow(weight=50.0),
+                comparison=SigmoidComparison(weight=100.0),
+                rounding=SoftRounding(weight=100.0),
+                control=SoftControlFlow(weight=100.0),
                 sampling=SoftRandomSampling(
                 poisson_max_bins=100,
                 binomial_max_bins=100,
@@ -311,12 +317,12 @@ def main() -> None:
 
             history, trained_policy = trainer.train_trajectory(
                 iterations=iterations,
-                print_every=100,
+                print_every=print_every,
                 batch_size=batch_size,
                 additive_noise=trainer.default_additive_noise,
             )
             del trained_policy
-
+            num_runs_do += 1
             seed_iterations, seed_returns = collapse_history_to_iterations(
                 history,
                 label=label,
@@ -332,6 +338,8 @@ def main() -> None:
                 f"{label}: seed={seed:2d} "
                 f"start_return={seed_returns[0]:10.4f} "
                 f"final_return={seed_returns[-1]:10.4f}"
+                f"| number of runs done = {num_runs_do} "
+                f"| number that left = {len(seeds) - num_runs_do}"
             )
 
         returns_tensor = torch.tensor(all_training_returns, dtype=torch.float32)
@@ -369,7 +377,10 @@ def main() -> None:
 
         all_training_returns: List[List[float]] = []
         iteration_axis: List[int] = []
-
+        list_of_seeds = [1000,2000,3000,5000,6000,7000,8000,9000,10000]
+        for i in range(len(list_of_seeds)):
+            seeds.append(list_of_seeds[i])
+            
         for seed in seeds:
             planner = JaxBackpropPlanner(
                 rddl=env.model,
