@@ -1,6 +1,6 @@
 # Core runtime dependencies
 numpy>=1.24
-torch>=2.0
+torch
 pyRDDLGym>=2.6,<3.0
 
 # Optional comparison stack for StochasticPBBP/tests/compiler_test.py
