@@ -9,7 +9,7 @@ import numpy as np
 import pyRDDLGym
 
 import torch
-from core.Train import Train
+from StochasticPBBP.core.Train import Train
 from StochasticPBBP.core.Rollout import TorchRollout
 from StochasticPBBP.utils.Policies import NeuralStateFeedbackPolicy, MBDPOPolicy
 from StochasticPBBP.utils.helper import collapse_history_to_iterations
