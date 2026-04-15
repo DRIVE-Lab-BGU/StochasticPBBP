@@ -1,4 +1,3 @@
-
 non-fluents nf_hvac_1c {
 	domain = hvac;
 	objects {
@@ -8,9 +7,9 @@ non-fluents nf_hvac_1c {
 	non-fluents {
 		TEMP-ZONE-MIN = 22.0;
 		TEMP-ZONE-MAX = 25.0;
-		ADJ-HEATER(h1, z2) = 1;
-		ADJ-HEATER(h2, z2) = 1;
-		ADJ-HEATER(h3, z1) = 1;
+		ADJ-HEATER(h1, z2);
+		ADJ-HEATER(h2, z2);
+		ADJ-HEATER(h3, z1);
 	};
 }
 instance inst_hvac_1c {
