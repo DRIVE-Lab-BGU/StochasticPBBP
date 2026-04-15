@@ -52,7 +52,7 @@ class ExperimentManager:
         self.eval_seeder = FibonacciSeeder(self.eval_seed)
         self.noise = noise
         if self.noise is None:
-            self.noise = {"type": "constant", "value":0.0}
+            self.noise = {"type": "constant", "value":0.0, "final":0.0}
         torch.manual_seed(seed)
 
         self.template_rollout = TorchRollout(self.env.model, horizon=self.horizon)
@@ -131,6 +131,9 @@ class ExperimentManager:
             additive_noise=AdditiveNoiseFactory.create(
                 noise_type=self.noise["type"],
                 std=self.noise["value"],
+                start_std=self.noise["value"],
+                end_std=self.noise["final"],
+                num_iterations=iterations,
                 source=self.template_rollout,
             ),
         )
