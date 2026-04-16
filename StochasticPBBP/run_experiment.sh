@@ -13,7 +13,26 @@ noisetype=$6
 noisestd=$7
 output=$8
 
-runai submit -i registry.bgu.ac.il/hpc/jupyter-notebook:latest -e HOME=/gpfs0/bgu-ataitler/users/ataitler --name "$test" -g 0.5 --cpu-limit 4 -- "cd ~/code/StochasticBPPB && source activate ~/env/StochasticBPPB && python -m StochasticBPPB.run --domain ${domain} --instance ${i} --seeds ${seeds} --eval ${evals} --iterations ${iters} --noisetype ${noisetype} --noisestd ${noisestd} -e"
+
+
+set -euo pipefail
+
+#JOB_NAME=${$}
+
+CPU=${CPU:-4}
+MEMORY=${MEMORY:-8Gi}
+GPU=${GPU:-1}
+CONDA_ENV=${CONDA_ENV:-StochasticBPPB}
+
+runai-bgu submit cmd \
+  -n "test" \
+  -c "${CPU}" \
+  -m "${MEMORY}" \
+  -g "${GPU}" \
+  --conda "${CONDA_ENV}" \
+  -- "cd code/StochasticBPPB && python -m StochasticBPPB.run --domain reservoir --instance 1 iterations 100
+
+# runai submit -i registry.bgu.ac.il/hpc/jupyter-notebook:latest -e HOME=/gpfs0/bgu-ataitler/users/ataitler --name "$test" -g 0.5 --cpu-limit 4 -- "cd ~/code/StochasticBPPB && source activate ~/env/StochasticBPPB && python -m StochasticBPPB.run --domain ${domain} --instance ${i} --seeds ${seeds} --eval ${evals} --iterations ${iters} --noisetype ${noisetype} --noisestd ${noisestd} -e"
 
 
 # Run the Python script $count times

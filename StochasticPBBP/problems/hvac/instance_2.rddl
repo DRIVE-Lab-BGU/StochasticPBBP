@@ -11,8 +11,8 @@ non-fluents nf_hvac_1c {
 		ADJ-HEATER(h1, z2);
 		ADJ-HEATER(h2, z2);
 		ADJ-HEATER(h3, z1);
-//		P-SWITCH(z1) = 0.05;
-//		P-SWITCH(z2) = 0.05;
+		P-SWITCH(z1) = 0.05;
+		P-SWITCH(z2) = 0.05;
 	};
 }
 instance inst_hvac_1c {
