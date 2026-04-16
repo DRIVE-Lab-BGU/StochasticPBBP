@@ -7,7 +7,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 
 
 def main():
-    domain = 'reservoir'
+    domain = 'hvac'
     instance = 2
     output_fol = os.path.join(PACKAGE_ROOT, '../outputs', domain + '_' + str(instance), 'run_logs')
     output_plot = os.path.join(output_fol, 'vis')
