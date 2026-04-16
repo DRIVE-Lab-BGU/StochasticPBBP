@@ -54,8 +54,8 @@ domain hvac{
 		heat-input-eff(?h) = if (heat-input(?h) < 0)
 		                     then (min[heat-input(?h), -HEAT-TOL])
 		                     else (max[heat-input(?h), HEAT-TOL]);
-		occupied'(?z) = occupied(?z);
-		// occupied'(?z) = occupied(?z) ^ Bernoulli(1.0 - P-SWITCH(?z));
+//		occupied'(?z) = occupied(?z);
+		 occupied'(?z) = occupied(?z) ^ Bernoulli(1.0 - P-SWITCH(?z));
 		// derived air temperature before each heater
 		temp-1(?h) = if ((sum_{?z : zone}[ADJ-HEATER(?h, ?z)]) > 0)
 		             then 1/(sum_{?z : zone}[ADJ-HEATER(?h, ?z)]) * (sum_{?z : zone}[ (temp-zone(?z) + (TEMP-OUT - temp-zone(?z)*OUT-AIR-FLOW/fan-in-eff(?z)))*ADJ-HEATER(?h, ?z) ])

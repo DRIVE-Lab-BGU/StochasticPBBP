@@ -8,8 +8,8 @@ from StochasticPBBP.manager import ExperimentManager
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--instance", type=int, default=2, help="instance number")
-parser.add_argument("--domain", type=str, default='hvac', help="domain name")
+parser.add_argument("--instance", type=int, default=1, help="instance number")
+parser.add_argument("--domain", type=str, default='quadcopter', help="domain name")
 parser.add_argument("--seeds", type=int, default=5, help="number of seeds for training")
 parser.add_argument("--eval", type=int, default=5, help="number of averaging evaluations")
 parser.add_argument("--trainkey", type=int, default=112, help="start seed for the training seeds")
