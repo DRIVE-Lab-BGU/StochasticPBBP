@@ -10,6 +10,7 @@ import pyRDDLGym
 
 import torch
 from StochasticPBBP.core.Train import Train
+from StochasticPBBP.core.R2Trainer import R2Trainer
 from StochasticPBBP.core.Rollout import TorchRollout
 from StochasticPBBP.utils.Policies import NeuralStateFeedbackPolicy, MBDPOPolicy
 from StochasticPBBP.utils.helper import collapse_history_to_iterations
@@ -50,9 +51,8 @@ class ExperimentManager:
         seed_start = int(str(time.time_ns())[10:13])
         self.train_seeder = FibonacciSeeder(seed_start)
         self.eval_seeder = FibonacciSeeder(self.eval_seed)
-        self.noise = noise
-        if self.noise is None:
-            self.noise = {"type": "constant", "value":0.0, "final":0.0}
+        self.noise = dict(noise) if noise is not None else {"type": "constant", "value": 0.0}
+        self.noise.setdefault("final", float(self.noise["value"]))
         torch.manual_seed(seed)
 
         self.template_rollout = TorchRollout(self.env.model, horizon=self.horizon)
@@ -109,6 +109,65 @@ class ExperimentManager:
         rows_std = np.std(returns, axis=0)
         return rows_avg, rows_std
 
+    def _build_additive_noise(self, iterations: int):
+        return AdditiveNoiseFactory.create(
+            noise_type=self.noise["type"],
+            std=self.noise["value"],
+            start_std=self.noise["value"],
+            end_std=self.noise["final"],
+            num_iterations=iterations,
+            source=self.template_rollout,
+        )
+
+    def _build_trainer(self, *, policy, iterations: int):
+        additive_noise = self._build_additive_noise(iterations)
+        if self.noise["type"] != "gradient2noise":
+            return Train(
+                horizon=self.horizon,
+                model=self.env.model,
+                action_space=self.env.action_space,
+                policy=policy,
+                logic=self.logic,
+                lr=self.lr,
+                hidden_sizes=self.arch,
+                batch_size=self.horizon,
+                seed=self.seed,
+                additive_noise=additive_noise,
+            )
+
+        analysis_additive_noise = AdditiveNoiseFactory.create(
+            noise_type='constant',
+            std=0.0,
+            source=self.template_rollout,
+        )
+        return R2Trainer(
+            model=self.env.model,
+            action_space=self.env.action_space,
+            policy=policy,
+            horizon=self.horizon,
+            hidden_sizes=self.arch,
+            additive_noise=additive_noise,
+            analysis_additive_noise=analysis_additive_noise,
+            logic=self.logic,
+            lr=self.lr,
+            seed=self.seed,
+        )
+
+    def _history_to_iterations(self, history):
+        if not history:
+            return [], []
+        first_item = history[0]
+        if "analysis_return" in first_item:
+            return (
+                [int(item["iteration"]) for item in history],
+                [float(item["analysis_return"]) for item in history],
+            )
+        return collapse_history_to_iterations(
+            history,
+            label="",
+            seed=self.seed,
+        )
+
     def _run_single_experiment(self, iterations: int=100, log_frequency: int=10) -> None:
         policy = NeuralStateFeedbackPolicy(
             observation_template=self.observation_template,
@@ -117,27 +176,7 @@ class ExperimentManager:
             action_space=self.env.action_space,
             seed=next(self.train_seeder)
         )
-
-        trainer = Train(
-            horizon=self.horizon,
-            model=self.env.model,
-            action_space=self.env.action_space,
-            policy=policy,
-            logic=self.logic,
-            lr=self.lr,
-            hidden_sizes=self.arch,  # why train need the network arch?!?
-            batch_size=self.horizon,
-            seed=self.seed,
-            additive_noise=AdditiveNoiseFactory.create(
-                noise_type=self.noise["type"],
-                std=self.noise["value"],
-                start_std=self.noise["value"],
-                end_std=self.noise["final"],
-                num_iterations=iterations,
-                source=self.template_rollout,
-            ),
-        )
-
+        trainer = self._build_trainer(policy=policy, iterations=iterations)
         eval_returns = []
         eval_iterations = []
         all_train_iterations = []
@@ -168,11 +207,7 @@ class ExperimentManager:
                 batch_size=self.horizon,  # why again?
             )
             to_go = to_go - log_frequency
-            train_iterations, train_returns = collapse_history_to_iterations(
-                history,
-                label="",
-                seed=self.seed,
-            )
+            train_iterations, train_returns = self._history_to_iterations(history)
 
             # evaluate policy
             if self.exact_eval_mode:
