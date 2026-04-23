@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, TypedDict
 
 import torch
 
-from core.Compiler import TorchRDDLCompiler
+from StochasticPBBP.core.Compiler import TorchRDDLCompiler
 
 if TYPE_CHECKING:
-    from core.Rollout import RolloutTrace
+    from StochasticPBBP.core.Rollout import RolloutTrace
 
 
 class NoiseInfo(TypedDict):

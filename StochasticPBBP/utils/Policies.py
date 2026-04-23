@@ -11,8 +11,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from pyRDDLGym.core.env import RDDLEnv
-from deprecated.Simulator import TorchRDDLSimulator
-from utils.seeder import BaseSeeder
+from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
+from StochasticPBBP.utils.seeder import BaseSeeder
 
 TensorDict = Dict[str, torch.Tensor]
 

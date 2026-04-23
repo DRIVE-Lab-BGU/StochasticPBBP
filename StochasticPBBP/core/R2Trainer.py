@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from torch import nn
 
-from core.Train import Train
-from utils.Noise import AdditiveNoise, AdditiveNoiseFactory
+from StochasticPBBP.core.Train import Train
+from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
 
 
 class R2TrainingPhase(str, Enum):

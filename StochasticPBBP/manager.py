@@ -11,15 +11,15 @@ import pyRDDLGym
 import torch
 
 
-from core.Train import Train
-from core.R2Trainer import R2Trainer
-from core.Rollout import TorchRollout
-from utils.Policies import NeuralStateFeedbackPolicy, MBDPOPolicy
-from utils.helper import collapse_history_to_iterations
-from utils.seeder import FibonacciSeeder
-from utils.Noise import AdditiveNoiseFactory, NoiseInfo
-from core.Logic import FuzzyLogic, SoftRounding, ProductTNorm, SigmoidComparison, SoftRandomSampling, SoftControlFlow
-from utils.logger import CSVLogger
+from StochasticPBBP.core.Train import Train
+from StochasticPBBP.core.R2Trainer import R2Trainer
+from StochasticPBBP.core.Rollout import TorchRollout
+from StochasticPBBP.utils.Policies import NeuralStateFeedbackPolicy, MBDPOPolicy
+from StochasticPBBP.utils.helper import collapse_history_to_iterations
+from StochasticPBBP.utils.seeder import FibonacciSeeder
+from StochasticPBBP.utils.Noise import AdditiveNoiseFactory, NoiseInfo
+from StochasticPBBP.core.Logic import FuzzyLogic, SoftRounding, ProductTNorm, SigmoidComparison, SoftRandomSampling, SoftControlFlow
+from StochasticPBBP.utils.logger import CSVLogger
 
 
 
