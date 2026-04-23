@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pyRDDLGym
-
+import torch
 from StochasticPBBP.core.R2Trainer import R2Trainer
 from StochasticPBBP.core.Rollout import TorchRollout
 from StochasticPBBP.utils.Noise import AdditiveNoiseFactory
@@ -18,21 +18,21 @@ from StochasticPBBP.core.Logic import (
 
 
 def main() -> None:
-    hidden_sizes = (12, 12)
-    iterations = 100
+    hidden_sizes = (128, 64)
+    iterations = 200
     print_every = 10
-    seed = 42
+    seed = 2
     package_root = Path(__file__).resolve().parent
     domain = package_root / "problems" / "reservoir" / "domain.rddl"
-    instance = package_root / "problems" / "reservoir" / "instance_4.rddl"
-
+    instance = package_root / "problems" / "reservoir" / "instance_3.rddl"
+    torch.manual_seed(seed)
     env = pyRDDLGym.make(
         domain=str(domain),
         instance=str(instance),
         vectorized=True,
     )
     horizon = int(env.model.horizon)
-    horizon = 120
+    horizon = 5
     template_rollout = TorchRollout(env.model, horizon=horizon)
     _, observation_template, _ = template_rollout.reset()
     ### TO UPDATE  ###
@@ -62,8 +62,6 @@ def main() -> None:
         max_std=5.0,
         alpha=0.1,
         norm_scope='global',
-        curvature_weight=0.5,
-        curvature_reduce='mean_abs',
         step_score_aggregate='mean',
         normalization_quantile=0.95,
     )

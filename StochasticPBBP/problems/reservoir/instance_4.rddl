@@ -299,6 +299,6 @@ instance inst_reservoir_control_cont_5c {
 		rlevel(t30) = 129.51566607964847;
 	};
 	max-nondef-actions = pos-inf;
-	horizon = 2000;
+	horizon = 350;
 	discount = 1.0;
 }

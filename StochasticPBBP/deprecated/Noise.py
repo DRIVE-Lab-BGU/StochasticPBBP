@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import torch
 
-from StochasticPBBP.core.Compiler import FuzzyLogic, TorchRDDLCompiler
+from core.Compiler import FuzzyLogic, TorchRDDLCompiler
 
 
 class noise:

@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, TypedDict
 
 import torch
 
-from StochasticPBBP.core.Compiler import TorchRDDLCompiler
+from core.Compiler import TorchRDDLCompiler
 
 if TYPE_CHECKING:
-    from StochasticPBBP.core.Rollout import RolloutTrace
+    from core.Rollout import RolloutTrace
 
 
 class NoiseInfo(TypedDict):
@@ -191,8 +191,6 @@ class R2GradientAdditiveNoise(AdditiveNoise):
                  max_std: Optional[float] = 5.0,
                  alpha: float=1.0,
                  norm_scope: str='global',
-                 curvature_weight: float=0.0,
-                 curvature_reduce: str='mean_abs',
                  step_score_aggregate: str='mean',
                  normalization_quantile: float=0.95,
                  fallback_noise: Optional[AdditiveNoise]=None) -> None:
@@ -214,20 +212,10 @@ class R2GradientAdditiveNoise(AdditiveNoise):
             )
         if alpha <= 0:
             raise ValueError(f'alpha must be positive, got {alpha!r}.')
-        if curvature_weight < 0:
-            raise ValueError(
-                f'curvature_weight must be non-negative, got {curvature_weight!r}.'
-            )
         normalized_scope = norm_scope.strip().lower()
         if normalized_scope not in {'global', 'step'}:
             raise ValueError(
                 f'norm_scope must be "global" or "step", got {norm_scope!r}.'
-            )
-        normalized_curvature_reduce = curvature_reduce.strip().lower()
-        if normalized_curvature_reduce not in {'mean_abs', 'norm'}:
-            raise ValueError(
-                'curvature_reduce must be "mean_abs" or "norm", '
-                f'got {curvature_reduce!r}.'
             )
         normalized_step_aggregate = step_score_aggregate.strip().lower()
         if normalized_step_aggregate not in {'mean', 'sum'}:
@@ -250,16 +238,12 @@ class R2GradientAdditiveNoise(AdditiveNoise):
         # quantile-based normalization operates on timestep scores across the
         # full trajectory regardless of this flag.
         self.norm_scope = normalized_scope
-        # Curvature arguments are accepted for backward compatibility but are
         # ignored by the gradient-only implementation.
-        self.curvature_weight = float(curvature_weight)
-        self.curvature_reduce = normalized_curvature_reduce
         self.step_score_aggregate = normalized_step_aggregate
         self.normalization_quantile = float(normalization_quantile)
         self.fallback_noise = NoAdditiveNoise() if fallback_noise is None else fallback_noise
         self._std_profile: TensorProfile = []
         self.last_gradients: TensorProfile = []
-        self.last_curvatures: ScalarProfile = []
         self.last_action_scores: ScalarProfile = []
         self.last_step_scores: List[float] = []
         self.last_gradient_inf_norm: float = 0.0
@@ -276,7 +260,6 @@ class R2GradientAdditiveNoise(AdditiveNoise):
     def clear_profile(self) -> None:
         self._std_profile = []
         self.last_gradients = []
-        self.last_curvatures = []
         self.last_action_scores = []
         self.last_step_scores = []
         self.last_gradient_inf_norm = 0.0
@@ -337,14 +320,15 @@ class R2GradientAdditiveNoise(AdditiveNoise):
             differentiable_locations=differentiable_locations,
             objective=reduced_objective,
         )
+        # calculate the sensitivity scores for each action and step -> s_t in our method
         action_score_map, step_scores = self._build_step_scores(
             references=references,
             grad_map=grad_map,
-        )
+        ) 
         profile = self._build_std_profile(
             references=references,
             step_scores=step_scores,
-        )
+        ) # map the step scores to std values and broadcast to action shapes -> sigma_t in our method
         self.set_profile(profile)
         self.last_gradients = self._materialize_gradient_profile(
             references=references,
@@ -441,6 +425,7 @@ class R2GradientAdditiveNoise(AdditiveNoise):
         references: Sequence[ActionReference],
         grad_map: Dict[ActionLocation, torch.Tensor],
     ) -> Tuple[Dict[ActionLocation, float], List[float]]:
+        ''' Compute a scalar sensitivity score for each action(time step)tensor and aggregate(in case of multiple actions) into step scores.'''
         if not references:
             return {}, []
 
@@ -461,6 +446,7 @@ class R2GradientAdditiveNoise(AdditiveNoise):
         return action_score_map, step_scores
 
     def _aggregate_step_score(self, action_scores: Sequence[float]) -> float:
+        '''Aggregate multiple action scores into a single step score for normalization and noise mapping.'''
         if not action_scores:
             return 0.0
         if self.step_score_aggregate == 'sum':
@@ -473,6 +459,7 @@ class R2GradientAdditiveNoise(AdditiveNoise):
         references: Sequence[ActionReference],
         step_scores: Sequence[float],
     ) -> TensorProfile:
+        ''' create a noise profile by mapping step scores to std values and broadcasting to action shapes.'''
         if not references:
             return []
 
@@ -503,6 +490,7 @@ class R2GradientAdditiveNoise(AdditiveNoise):
         return max(self.min_std, min(self.max_std, float(sigma)))
 
     def _score_quantile(self, step_scores: Sequence[float]) -> float:
+        ''' return the specified quantile of the step scores for normalization, treating NaNs and Infs as zeros.'''
         if not step_scores:
             return 0.0
         scores = torch.as_tensor(step_scores, dtype=torch.float64)
@@ -539,6 +527,7 @@ class R2GradientAdditiveNoise(AdditiveNoise):
 
     @staticmethod
     def _gradient_tensor_norm(gradient: torch.Tensor) -> float:
+        ''''Compute the L2 norm of a gradient tensor, treating NaNs and Infs as zeros.'''
         if gradient.numel() == 0:
             return 0.0
         clean_gradient = torch.nan_to_num(
@@ -608,7 +597,7 @@ class AdditiveNoiseFactory:
                 eps=1e-6,
                 min_std=1,
                 max_std=std,
-                alpha=0.1,
+                alpha=0.1,# for linear 1.0
                 norm_scope='global',
                 step_score_aggregate='mean',
                 normalization_quantile=0.95,

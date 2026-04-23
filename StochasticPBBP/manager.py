@@ -9,15 +9,17 @@ import numpy as np
 import pyRDDLGym
 
 import torch
-from StochasticPBBP.core.Train import Train
-from StochasticPBBP.core.R2Trainer import R2Trainer
-from StochasticPBBP.core.Rollout import TorchRollout
-from StochasticPBBP.utils.Policies import NeuralStateFeedbackPolicy, MBDPOPolicy
-from StochasticPBBP.utils.helper import collapse_history_to_iterations
-from StochasticPBBP.utils.seeder import FibonacciSeeder
-from StochasticPBBP.utils.Noise import AdditiveNoiseFactory, NoiseInfo
-from StochasticPBBP.core.Logic import FuzzyLogic, SoftRounding, ProductTNorm, SigmoidComparison, SoftRandomSampling, SoftControlFlow
-from StochasticPBBP.utils.logger import CSVLogger
+
+
+from core.Train import Train
+from core.R2Trainer import R2Trainer
+from core.Rollout import TorchRollout
+from utils.Policies import NeuralStateFeedbackPolicy, MBDPOPolicy
+from utils.helper import collapse_history_to_iterations
+from utils.seeder import FibonacciSeeder
+from utils.Noise import AdditiveNoiseFactory, NoiseInfo
+from core.Logic import FuzzyLogic, SoftRounding, ProductTNorm, SigmoidComparison, SoftRandomSampling, SoftControlFlow
+from utils.logger import CSVLogger
 
 
 
@@ -29,7 +31,7 @@ class ExperimentManager:
                  eval_seed: int=42,
                  eval_seeds: int=1,
                  horizon: int=100,
-                 arch: Tuple[int, ...]=(12, 12),
+                 arch: Tuple[int, ...]= None,
                  fuzzy_weight: float=50.0,
                  learning_rate: float=0.01,
                  noise: Optional[NoiseInfo]=None,
@@ -38,7 +40,11 @@ class ExperimentManager:
         self.env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
         self.env.horizon = horizon
         self.horizon = horizon
-        self.arch = arch
+        if arch is None:
+            self.arch = (12,12)
+            print("[INFO] No architecture specified, using default (12, 12)")
+        else:
+            self.arch = arch
         self.lr = learning_rate
         self.seed = seed
         self.seeds = seeds

@@ -12,8 +12,8 @@ from torch import nn
 
 from pyRDDLGym.core.compiler.model import RDDLLiftedModel
 from pyRDDLGym.core.debug.logger import Logger
-from StochasticPBBP.core.Compiler import TorchRDDLCompiler
-from StochasticPBBP.utils.Noise import AdditiveNoise, NoiseContext, NoAdditiveNoise
+from core.Compiler import TorchRDDLCompiler
+from utils.Noise import AdditiveNoise, NoiseContext, NoAdditiveNoise
 
 TensorDict = Dict[str, torch.Tensor]
 PolicyOutput = Union[TensorDict, Tuple[TensorDict, Any]]

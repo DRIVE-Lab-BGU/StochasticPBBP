@@ -171,15 +171,15 @@ class state2action(nn.Module):
 
 def main() -> None:
     domain = PACKAGE_ROOT / "problems" / "reservoir" / "domain.rddl"
-    instance = PACKAGE_ROOT / "problems" / "reservoir" / "instance_3.rddl"
+    instance = PACKAGE_ROOT / "problems" / "reservoir" / "instance_4.rddl"
 
     print(f"DOMAIN={domain}")
     print(f"INSTANCE={instance}")
 
     env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
-    horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "200"))
+    horizon = int(os.environ.get("NOISE_PLOT_HORIZON", "350"))
     hidden_sizes = (12, 12)
-    iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "100"))
+    iterations = int(os.environ.get("NOISE_PLOT_ITERATIONS", "400"))
     num_seeds = int(os.environ.get("NOISE_PLOT_NUM_SEEDS", "1"))
     seed_offset = int(os.environ.get("NOISE_PLOT_SEED_OFFSET", "112"))
     seeds = [seed_offset + 2*index for index in range(num_seeds)]
@@ -466,7 +466,7 @@ def main() -> None:
     ###########################
     start = time.perf_counter()
     results_no_noise_no_batch = run_experiment(
-        noise_value=0.0,
+        noise_value=1.0,
         label='torch | no noise | batch=1',
         batch_size=horizon,
     )

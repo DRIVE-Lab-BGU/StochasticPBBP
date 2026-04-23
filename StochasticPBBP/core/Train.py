@@ -6,10 +6,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 from torch import nn
 
-from StochasticPBBP.core.Logic import ExactLogic, FuzzyLogic
-from StochasticPBBP.core.Rollout import TorchRollout
-from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
-from StochasticPBBP.utils.Policies import StationaryMarkov
+from core.Logic import ExactLogic, FuzzyLogic
+from core.Rollout import TorchRollout
+from utils.Noise import AdditiveNoise, AdditiveNoiseFactory
+from utils.Policies import StationaryMarkov
 
 # from .Logic import FuzzyLogic
 # from .Policies import GaussianPolicy

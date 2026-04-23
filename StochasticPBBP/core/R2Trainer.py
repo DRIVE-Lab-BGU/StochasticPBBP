@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from torch import nn
 
-from StochasticPBBP.core.Train import Train
-from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
+from core.Train import Train
+from utils.Noise import AdditiveNoise, AdditiveNoiseFactory
 
 
 class R2TrainingPhase(str, Enum):
@@ -190,15 +190,21 @@ class R2Trainer(Train):
         # and then we can update the policy
 #        if self.r2_profile is None:
 #            self._set_phase(R2TrainingPhase.BOOTSTRAP)
-
+        
+        # run the policy this the r2n moise (the sdt take from the profile) get a rollout ipdate the policy
         update_result = self._run_update_phase(
             iteration=iteration,
             additive_noise=effective_additive_noise,
         )
+
+        
+        # take the trained policy and check it on a eollout withot noise.
         analysis_result = self._run_analysis_phase(
             iteration=iteration,
             additive_noise=effective_analysis_noise,
         )
+
+        # take thr analysis_result and update the noise profile for the next iteration.
         self.r2_profile = self.refresh_noise_profile(
             iteration=iteration,
             update_result=update_result,
