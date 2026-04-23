@@ -52,30 +52,28 @@ domain power_gen {
 		UNFULFILLED-DEMAND-PENALTY : { non-fluent, real, default = 1000.0 };
 		PROD-SHAPE(plant)    : { non-fluent, real, default = 1.0 };
 		PROD-SCALE(plant)    : { non-fluent, real, default = 0.0000001 };
+		TAU                  : { non-fluent, real, default = 0.0001 };
 
     	// Action - int
 		curProd(plant) : { action-fluent, real, default = 0 };
 
 		// State - int and real
 		prevProd(plant) : { state-fluent, real, default = 0 };
-		prevOn(plant) : { state-fluent, bool, default = false };
+		prevOn(plant) : { state-fluent, real, default = 0 };
 		temperature     : { state-fluent, real, default = 20 };
 
 		// Derived and intermediate
 		demand          : { interm-fluent, real };
 		fulfilledDemand : { interm-fluent, real };
 		effectiveProd(plant) : { interm-fluent, real };
-		curOn(plant) : { interm-fluent, bool };
+		curOn(plant) : { interm-fluent, real };
 	};
-
+	// Weibull(PROD-SHAPE(?p), PROD-SCALE(?p)) can make all to get nan
 	cpfs {
-
 		// State - now prod is zeroed if not on
-		curOn(?p) = (curProd(?p) >= PROD-UNITS-MIN(?p));
-		effectiveProd(?p) = if (curOn(?p))
-			then max[min[curProd(?p) + Weibull(PROD-SHAPE(?p), PROD-SCALE(?p)),
-				PROD-UNITS-MAX(?p)], PROD-UNITS-MIN(?p)]
-			else 0.0;
+		curOn(?p) = 1/(1+exp[-1/TAU*(curProd(?p) - PROD-UNITS-MIN(?p))]);
+        effectiveProd(?p) = curOn(?p)*(max[min[curProd(?p) + Weibull(PROD-SHAPE(?p), PROD-SCALE(?p)), 
+				PROD-UNITS-MAX(?p)], PROD-UNITS-MIN(?p)]);
 		prevProd'(?p) = effectiveProd(?p);
 		prevOn'(?p) = curOn(?p);
 		temperature'  = max[min[Normal(temperature, TEMP-VARIANCE), TEMP-MAX], TEMP-MIN];
@@ -91,9 +89,9 @@ domain power_gen {
 	// now includes cost of turning on a plant
 	reward = [-(sum_{?p : plant} effectiveProd(?p) * COST-PER-UNIT(?p))]
 		     + (fulfilledDemand * INCOME-PER-UNIT)
-		     - (if (demand > fulfilledDemand) then UNFULFILLED-DEMAND-PENALTY else 0.0 )
+		     -((1/(1+exp[-1/TAU*(demand - fulfilledDemand)]))*UNFULFILLED-DEMAND-PENALTY)
 		     + (sum_{?p : plant} abs[ effectiveProd(?p) - prevProd(?p) ] * PROD-CHANGE-PENALTY(?p) )
-			 - (sum_{?p : plant} [if (~prevOn(?p) ^ curOn(?p)) then TURN-ON-COST(?p) else 0.0] );
+			 - (sum_{?p : plant} [((1 - prevOn(?p)) * curOn(?p)) * TURN-ON-COST(?p)]);
 
 	action-preconditions {
 
