@@ -582,7 +582,8 @@ class AdditiveNoiseFactory:
                model: Optional[Any]=None,
                wrt: Optional[list[str]]=None,
                noise_scale: float=1.0,
-               source: Any) -> AdditiveNoise:
+               source: Any,
+               alpha: float=1.0) -> AdditiveNoise:
         normalized_type = noise_type.strip().lower()
         resolved_model = cls._extract_rddl_model(source) if model is None else model
 
@@ -590,14 +591,14 @@ class AdditiveNoiseFactory:
             if std == 0.0:
                 return NoAdditiveNoise()
             return ConstantAdditiveNoise(std=std)
-
+        ### here #### 
         if normalized_type == "gradient2noise":
             r2_noise = R2GradientAdditiveNoise(
                 scale=1.0,
                 eps=1e-6,
                 min_std=1,
                 max_std=std,
-                alpha=0.1,# for linear 1.0
+                alpha=alpha,# for linear 1.0
                 norm_scope='global',
                 step_score_aggregate='mean',
                 normalization_quantile=0.95,
