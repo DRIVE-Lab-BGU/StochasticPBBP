@@ -25,6 +25,12 @@ parser.add_argument("--noisetype", type=str, default="gradient2noise", help="typ
 parser.add_argument("--noisestd", type=float, default=3.5, help="initial std of noise")
 parser.add_argument("--noisestdend", type=float, default=0.0, help="final std of noise")
 parser.add_argument("--alpha", type=float, default=1.0, help="alpha parameter for noise")
+parser.add_argument(
+    "--device",
+    type=str,
+    default="auto",
+    help="execution device: auto, cpu, cuda, or mps",
+)
 # now the default is exact!
 parser.add_argument("-e", "--exact",default = True, action="store_true", help="Exact evaluation mode - evaluate on a"
                                                                 " separate pyRDDLGym instance")
@@ -44,7 +50,8 @@ def main(args) -> None:
     manager = ExperimentManager(domain=domain, instance=instance,seed=args.trainkey, horizon=args.horizon,
                                 seeds=args.seeds, fuzzy_weight=args.weight, learning_rate=args.lr, noise=noise,
                                 eval_seed=args.evalkey, eval_seeds=args.eval, exact_eval_mode=args.exact,
-                                output_folder=output_dir , arch=tuple(args.arch))
+                                output_folder=output_dir , arch=tuple(args.arch),
+                                device=args.device)
 
     iterations, returns, stds = manager.run_experiment(iterations=args.iterations, log_frequency=args.logfreq)
     if args.exact:

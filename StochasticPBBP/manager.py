@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TypedDict
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TypedDict, Union
 import time
 import numpy as np
 
@@ -20,6 +20,7 @@ from StochasticPBBP.utils.seeder import FibonacciSeeder
 from StochasticPBBP.utils.Noise import AdditiveNoiseFactory, NoiseInfo
 from StochasticPBBP.core.Logic import FuzzyLogic, SoftRounding, ProductTNorm, SigmoidComparison, SoftRandomSampling, SoftControlFlow
 from StochasticPBBP.utils.logger import CSVLogger
+from StochasticPBBP.utils.device import resolve_torch_device
 
 
 
@@ -36,10 +37,13 @@ class ExperimentManager:
                  learning_rate: float=0.01,
                  noise: Optional[NoiseInfo]=None,
                  exact_eval_mode=False,
-                 output_folder=None) -> None:
+                 output_folder=None,
+                 device: Optional[Union[str, torch.device]]=None) -> None:
         self.env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
         self.env.horizon = horizon
         self.horizon = horizon
+        self.device = resolve_torch_device(device)
+        print(f"[INFO] Using torch device {self.device}")
         if arch is None:
             self.arch = (12,12)
             print("[INFO] No architecture specified, using default (12, 12)")
@@ -61,7 +65,11 @@ class ExperimentManager:
         self.noise.setdefault("final", float(self.noise["value"]))
         torch.manual_seed(seed)
 
-        self.template_rollout = TorchRollout(self.env.model, horizon=self.horizon)
+        self.template_rollout = TorchRollout(
+            self.env.model,
+            horizon=self.horizon,
+            device=self.device,
+        )
         _, self.observation_template, _ = self.template_rollout.reset()
 
         self.logic = FuzzyLogic(
@@ -140,6 +148,7 @@ class ExperimentManager:
                 batch_size=self.horizon,
                 seed=self.seed,
                 additive_noise=additive_noise,
+                device=self.device,
             )
 
         analysis_additive_noise = AdditiveNoiseFactory.create(
@@ -158,6 +167,7 @@ class ExperimentManager:
             logic=self.logic,
             lr=self.lr,
             seed=self.seed,
+            device=self.device,
         )
 
     def _history_to_iterations(self, history):
@@ -181,7 +191,8 @@ class ExperimentManager:
             action_template=self.template_rollout.noop_actions,
             hidden_sizes=self.arch,
             action_space=self.env.action_space,
-            seed=next(self.train_seeder)
+            seed=next(self.train_seeder),
+            device=self.device,
         )
         trainer = self._build_trainer(policy=policy, iterations=iterations)
         eval_returns = []

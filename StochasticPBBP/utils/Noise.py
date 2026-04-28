@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, TypedDict
 import torch
 
 from StochasticPBBP.core.Compiler import TorchRDDLCompiler
+from StochasticPBBP.utils.device import make_generator
 
 if TYPE_CHECKING:
     from StochasticPBBP.core.Rollout import RolloutTrace
@@ -49,7 +50,16 @@ class AdditiveNoise(ABC):
     def __init__(self, seed: Optional[int]=None) -> None:
         if seed is None:
             seed = time.time_ns()
-        self.g = torch.Generator().manual_seed(seed)
+        self.seed = int(seed)
+        self._generators: Dict[str, torch.Generator] = {}
+
+    def _get_generator(self, device: torch.device) -> torch.Generator:
+        device_key = str(torch.device(device))
+        generator = self._generators.get(device_key)
+        if generator is None:
+            generator = make_generator(seed=self.seed, device=device)
+            self._generators[device_key] = generator
+        return generator
 
     def __call__(self,
                  actions: Optional[Dict[str, Any]],
@@ -110,9 +120,7 @@ class ConstantAdditiveNoise(AdditiveNoise):
         if std < 0:
             raise ValueError(f'std must be non-negative, got {std!r}.')
         self.std = float(std)
-        if seed is None:
-            seed = time.time_ns()
-        self.g = torch.Generator().manual_seed(seed)
+        super().__init__(seed=seed)
 
     def sample_like(self,
                     reference: torch.Tensor,
@@ -121,7 +129,8 @@ class ConstantAdditiveNoise(AdditiveNoise):
         del context
         if self.std == 0.0:
             return torch.zeros_like(reference)
-        return torch.empty_like(reference).normal_(generator=self.g) * self.std
+        generator = self._get_generator(reference.device)
+        return torch.empty_like(reference).normal_(generator=generator) * self.std
 
 
 class LinearDecayAdditiveNoise(ConstantAdditiveNoise):
@@ -301,7 +310,8 @@ class R2GradientAdditiveNoise(AdditiveNoise):
             )
         if torch.count_nonzero(std_tensor).item() == 0:
             return cloned
-        noise = torch.empty_like(cloned).normal_(generator=self.g)
+        generator = self._get_generator(cloned.device)
+        noise = torch.empty_like(cloned).normal_(generator=generator)
         return cloned + noise * std_tensor
 
     def refresh_from_analysis_trace(self,

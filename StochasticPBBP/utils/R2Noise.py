@@ -165,7 +165,8 @@ class R2GradientAdditiveNoise(AdditiveNoise):
             )
         if torch.count_nonzero(std_tensor).item() == 0:
             return cloned
-        noise = torch.empty_like(cloned).normal_(generator=self.g)
+        generator = self._get_generator(cloned.device)
+        noise = torch.empty_like(cloned).normal_(generator=generator)
         return cloned + noise * std_tensor
 
     def refresh_from_analysis_trace(self,

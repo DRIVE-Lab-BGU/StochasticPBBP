@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch import nn
@@ -10,6 +10,7 @@ from StochasticPBBP.core.Logic import ExactLogic, FuzzyLogic
 from StochasticPBBP.core.Rollout import TorchRollout
 from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
 from StochasticPBBP.utils.Policies import StationaryMarkov
+from StochasticPBBP.utils.device import make_generator, resolve_torch_device
 
 # from .Logic import FuzzyLogic
 # from .Policies import GaussianPolicy
@@ -47,20 +48,27 @@ class Train:
                  additive_noise: Optional[AdditiveNoise]=None,
                  logic: Optional[object]=None,
                  batch_size: Optional[int]=None,
-                 batch_num: int=1) -> None:
+                 batch_num: int=1,
+                 device: Optional[Union[str, torch.device]]=None) -> None:
         self.action_space = action_space
         self.hidden_sizes = tuple(hidden_sizes)
         self.seed = seed
+        self.device = resolve_torch_device(device)
         torch.manual_seed(seed)
 
         # Training historically used a relaxed backend by default. Keeping that
         # default preserves current behavior while still allowing callers to opt
         # into `ExactLogic()` (or another backend) explicitly.
         self.logic = ExactLogic() if logic is None else logic
-        self.rollout = TorchRollout(model, horizon=horizon, logic=self.logic ,key=torch.Generator().manual_seed(seed))
+        self.rollout = TorchRollout(
+            model,
+            horizon=horizon,
+            logic=self.logic,
+            key=make_generator(seed=seed, device=self.device),
+            device=self.device,
+        )
         self.rollout.cell.key.manual_seed(seed)
-        self.batch_key = torch.Generator()
-        self.batch_key.manual_seed(seed)
+        self.batch_key = make_generator(seed=seed, device='cpu')
         self.simulator = simulator
         self.rollout.reset()
         self.default_additive_noise = self._resolve_additive_noise(additive_noise)
@@ -70,6 +78,8 @@ class Train:
         if policy is None:
                 raise ValueError('A policy must be provided.')
         self.policy = policy
+        if isinstance(self.policy, nn.Module):
+            self.policy = self.policy.to(self.device)
         self.optimizer = torch.optim.RMSprop(self.policy.parameters(), lr=lr)
 
     def _resolve_batch_size(self, batch_size: Optional[int]) -> int:

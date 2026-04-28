@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from torch import nn
 
@@ -37,7 +37,8 @@ class R2Trainer(Train):
                  analysis_additive_noise: Optional[AdditiveNoise]=None,
                  logic: Optional[object]=None,
                  batch_size: Optional[int]=None,
-                 batch_num: int=1) -> None:
+                 batch_num: int=1,
+                 device: Optional[Union[str, torch.device]]=None) -> None:
         super().__init__(
             model=model,
             action_space=action_space,
@@ -51,6 +52,7 @@ class R2Trainer(Train):
             logic=logic,
             batch_size=batch_size,
             batch_num=batch_num,
+            device=device,
         )
         self._validate_r2_batching(
             batch_size=self.default_batch_size,

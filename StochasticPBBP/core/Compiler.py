@@ -19,6 +19,12 @@ from pyRDDLGym.core.debug.logger import Logger
 
 from StochasticPBBP.core.Initializer import RDDLValueInitializer as TorchRDDLValueInitializer
 from StochasticPBBP.core.Logic import ExactLogic, FuzzyLogic
+from StochasticPBBP.utils.device import (
+    as_tensor_on_device,
+    infer_torch_device,
+    make_generator,
+    resolve_torch_device,
+)
 # from .Initializer import RDDLValueInitializer as TorchRDDLValueInitializer
 # from .Logic import ExactLogic, FuzzyLogic
 
@@ -115,6 +121,7 @@ class TorchRDDLCompiler:
                  use64bit: bool=False,
                  logic: Optional[object]=None,
                  fuzzy_logic: Optional[object]=None,
+                 device: Optional[Union[str, torch.device]]=None,
                  **_) -> None:
         """Prepare a compiler that mirrors the pyRDDLGym expression DAG.
 
@@ -137,6 +144,7 @@ class TorchRDDLCompiler:
 
         self.logger = logger
         self.python_functions = python_functions or {}
+        self.device = resolve_torch_device(device)
 
         backend = logic or fuzzy_logic
         if backend is None:
@@ -166,7 +174,17 @@ class TorchRDDLCompiler:
         }
 
         # compile initial values in torch tensors
-        initializer = TorchRDDLValueInitializer(rddl)
+        if self.device.type == 'mps' and use64bit:
+            raise ValueError(
+                'TorchRDDLCompiler does not support use64bit=True on MPS because '
+                'the backend does not support float64 tensors.'
+            )
+
+        initializer = TorchRDDLValueInitializer(
+            rddl,
+            device=self.device,
+            use64bit=use64bit,
+        )
         self.init_values: Dict[str, torch.Tensor] = initializer.initialize()
         self.cpfs: Dict[str, CallableExpr] = {}
         self.reward: CallableExpr | None = None
@@ -776,7 +794,7 @@ class TorchRDDLCompiler:
         tensor = self._ensure_tensor(value)
         if not isinstance(tensor, torch.Tensor):
             dtype = self.REAL if promote_real else None
-            tensor = torch.as_tensor(value, dtype=dtype)
+            tensor = as_tensor_on_device(value, dtype=dtype, device=self.device)
         elif promote_real and not tensor.is_floating_point():
             tensor = tensor.to(dtype=self.REAL)
         return tensor
@@ -825,15 +843,17 @@ class TorchRDDLCompiler:
             tensor(3.)
         """
         if not isinstance(lhs, torch.Tensor):
+            reference_device = infer_torch_device(rhs, default=self.device)
             try:
-                lhs = torch.as_tensor(lhs, dtype=self.REAL)
+                lhs = as_tensor_on_device(lhs, dtype=self.REAL, device=reference_device)
             except Exception:
-                lhs = torch.tensor(0.0, dtype=self.REAL)
+                lhs = torch.tensor(0.0, dtype=self.REAL, device=reference_device)
         if not isinstance(rhs, torch.Tensor):
+            reference_device = infer_torch_device(lhs, default=self.device)
             try:
-                rhs = torch.as_tensor(rhs, dtype=lhs.dtype)
+                rhs = as_tensor_on_device(rhs, dtype=lhs.dtype, device=reference_device)
             except Exception:
-                rhs = torch.tensor(0.0, dtype=lhs.dtype)
+                rhs = torch.tensor(0.0, dtype=lhs.dtype, device=reference_device)
 
         # align ranks
         while lhs.dim() < rhs.dim():
@@ -929,11 +949,12 @@ class TorchRDDLCompiler:
         """
         # coerce non-tensor predicates to a boolean
         if not isinstance(pred, torch.Tensor):
+            pred_device = infer_torch_device(then_value, else_value, default=self.device)
             try:
                 pred_val = bool(pred)
             except Exception:
                 pred_val = False
-            pred = torch.tensor(pred_val, dtype=self.REAL)
+            pred = torch.tensor(pred_val, dtype=self.REAL, device=pred_device)
         return torch.where(pred.to(dtype=self.REAL) > 0.5, then_value, else_value)
 
     def _apply_control_switch(self, pred: torch.Tensor, cases: torch.Tensor):
@@ -977,7 +998,7 @@ class TorchRDDLCompiler:
         if not isinstance(tensor, torch.Tensor):
             tensor = self._ensure_tensor(tensor)
         if not isinstance(tensor, torch.Tensor):
-            tensor = torch.tensor(bool(tensor))
+            tensor = torch.tensor(bool(tensor), device=self.device)
         if axes is None:
             axes = tuple(range(tensor.dim()))
         axes = tuple(axes) if isinstance(axes, (list, tuple)) else (axes,)
@@ -1204,7 +1225,7 @@ class TorchRDDLCompiler:
                 value, key, err, params = args[0](subs, params, key)
                 tensor = self._ensure_tensor(value)
                 if not isinstance(tensor, torch.Tensor):
-                    tensor = torch.tensor(bool(tensor))
+                    tensor = torch.tensor(bool(tensor), device=self.device)
                 return self._apply_unary('logical_not', tensor.bool()), key, err, params
             return _not
 
@@ -1221,13 +1242,13 @@ class TorchRDDLCompiler:
             value, key, err, params = args[0](subs, params, key)
             tensor = self._ensure_tensor(value)
             if not isinstance(tensor, torch.Tensor):
-                tensor = torch.tensor(bool(tensor))
+                tensor = torch.tensor(bool(tensor), device=self.device)
             value = tensor.bool()
             for arg_fn in args[1:]:
                 rhs, key, err_rhs, params = arg_fn(subs, params, key)
                 rhs_tensor = self._ensure_tensor(rhs)
                 if not isinstance(rhs_tensor, torch.Tensor):
-                    rhs_tensor = torch.tensor(bool(rhs_tensor))
+                    rhs_tensor = torch.tensor(bool(rhs_tensor), device=value.device)
                 rhs = rhs_tensor.bool()
                 err |= err_rhs
                 if op in {'^', '&'}:
@@ -1393,7 +1414,7 @@ class TorchRDDLCompiler:
         if op == 'sgn':
             tensor = self._ensure_tensor(value)
             if not isinstance(tensor, torch.Tensor):
-                tensor = torch.as_tensor(tensor, dtype=self.REAL)
+                tensor = as_tensor_on_device(tensor, dtype=self.REAL, device=self.device)
             return torch.sign(tensor)
         funcs = {
             'abs': torch.abs,
@@ -1649,7 +1670,10 @@ class TorchRDDLCompiler:
                     val, key, err, params = arg_fn(subs, params, key)
                     values.append(self._coerce_logic_tensor(val, promote_real=True))
                     total_err |= err
-                generator = self._ensure_generator(key, values[0].device if values else torch.device('cpu'))
+                generator = self._ensure_generator(
+                    key,
+                    values[0].device if values else self.device,
+                )
 
                 if name in {'Discrete', 'UnnormDiscrete'}:
                     prob = torch.stack(values, dim=-1)
@@ -1684,7 +1708,7 @@ class TorchRDDLCompiler:
                 val, key, err, params = arg_fn(subs, params, key)
                 values.append(self._ensure_tensor(val))
                 total_err |= err
-            device = values[0].device if values else torch.device('cpu')
+            device = values[0].device if values else self.device
             generator = self._ensure_generator(key, device)
             sample, sample_err = self._sample_random_variable(name, values, generator, expr)
             total_err |= sample_err
@@ -2115,7 +2139,10 @@ class TorchRDDLCompiler:
             tensor(1.)
         """
         if isinstance(value, torch.Tensor):
-            return value.to(dtype=self.REAL if value.dtype.is_floating_point else value.dtype)
+            return value.to(
+                dtype=self.REAL if value.dtype.is_floating_point else value.dtype,
+                device=self.device,
+            )
         if isinstance(value, np.ndarray):
             if value.dtype == np.object_:
                 raise TypeError('Object arrays are not supported in torch compilation.')
@@ -2127,17 +2154,17 @@ class TorchRDDLCompiler:
                 dtype = self.REAL
             else:
                 dtype = self.REAL
-            return torch.as_tensor(value, dtype=dtype)
+            return as_tensor_on_device(value, dtype=dtype, device=self.device)
         if isinstance(value, (bool, np.bool_)):
-            return torch.tensor(bool(value), dtype=torch.bool)
+            return torch.tensor(bool(value), dtype=torch.bool, device=self.device)
         if isinstance(value, (int, np.integer)):
-            return torch.tensor(int(value), dtype=self.INT)
+            return torch.tensor(int(value), dtype=self.INT, device=self.device)
         if isinstance(value, (float, np.floating)):
-            return torch.tensor(float(value), dtype=self.REAL)
+            return torch.tensor(float(value), dtype=self.REAL, device=self.device)
         if isinstance(value, (list, tuple)):
-            return torch.as_tensor(value, dtype=self.REAL)
+            return as_tensor_on_device(value, dtype=self.REAL, device=self.device)
         try:
-            return torch.tensor(value)
+            return torch.tensor(value, device=self.device)
         except Exception:
             return value
 
@@ -2178,12 +2205,18 @@ class TorchRDDLCompiler:
             True
         """
         if key is not None:
+            requested_device = device if isinstance(device, torch.device) else resolve_torch_device(device)
+            key_device = torch.device(str(key.device))
+            if key_device.type != requested_device.type or (
+                requested_device.index is not None and key_device.index not in {None, requested_device.index}
+            ):
+                raise ValueError(
+                    f'Random generator device {key_device} does not match requested execution device '
+                    f'{requested_device}.'
+                )
             return key
-        device_type = device.type if isinstance(device, torch.device) else 'cpu'
-        generator = torch.Generator(device=device_type)
         seed = torch.randint(0, 2**31 - 1, (1,), dtype=torch.int64).item()
-        generator.manual_seed(int(seed))
-        return generator
+        return make_generator(seed=int(seed), device=device)
 
 class TorchRDDLCompilerWithGrad(TorchRDDLCompiler):
     """Gradient-aware compiler placeholder (shares implementation)."""

@@ -2,7 +2,7 @@
 
 from abc import ABCMeta, abstractmethod
 import random
-from typing import Any, Callable, Dict, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -56,6 +56,33 @@ def _reduce_dims(tensor: torch.Tensor, axes: Union[int, Sequence[int]],
     return result
 
 
+def _infer_device(*values: Any, default: Optional[torch.device]=None) -> Optional[torch.device]:
+    for value in values:
+        if isinstance(value, torch.Tensor):
+            return value.device
+    return default
+
+
+def _as_tensor(value: Any,
+               *,
+               dtype: Optional[torch.dtype]=None,
+               device: Optional[torch.device]=None,
+               like: Optional[torch.Tensor]=None) -> torch.Tensor:
+    if like is not None:
+        if device is None:
+            device = like.device
+        if dtype is None:
+            dtype = like.dtype
+    tensor = value if isinstance(value, torch.Tensor) else torch.as_tensor(
+        value,
+        dtype=dtype,
+        device=device,
+    )
+    if dtype is not None or device is not None:
+        tensor = tensor.to(dtype=dtype or tensor.dtype, device=device or tensor.device)
+    return tensor
+
+
 # ===========================================================================
 # RELATIONAL OPERATIONS
 # - abstract class
@@ -105,7 +132,8 @@ class SigmoidComparison(Comparison):
         init_params[id_] = self.weight  # stash per-call weight so params stays mutable
 
         def _torch_wrapped_calc_greater_equal_approx(x, y, params):
-            x_t = torch.as_tensor(x)
+            device = _infer_device(x, y)
+            x_t = _as_tensor(x, device=device)
             y_t = torch.as_tensor(y, device=x_t.device, dtype=x_t.dtype)
             weight = torch.as_tensor(params[id_], dtype=x_t.dtype, device=x_t.device)
             # take the value of the sigmoid at (x - y)*weight
@@ -122,7 +150,8 @@ class SigmoidComparison(Comparison):
         init_params[id_] = self.weight  # tighten/loosen equality sharpness
 
         def _torch_wrapped_calc_equal_approx(x, y, params):
-            x_t = torch.as_tensor(x)
+            device = _infer_device(x, y)
+            x_t = _as_tensor(x, device=device)
             y_t = torch.as_tensor(y, device=x_t.device, dtype=x_t.dtype)
             weight = torch.as_tensor(params[id_], dtype=x_t.dtype, device=x_t.device)
             equal = 1.0 - torch.tanh(weight * (y_t - x_t)).pow(2)
@@ -135,7 +164,7 @@ class SigmoidComparison(Comparison):
         init_params[id_] = self.weight  # same slope shared across calls
 
         def _torch_wrapped_calc_sgn_approx(x, params):
-            x_t = torch.as_tensor(x)
+            x_t = _as_tensor(x)
             weight = torch.as_tensor(params[id_], dtype=x_t.dtype, device=x_t.device)
             sgn = torch.tanh(weight * x_t)
             return sgn, params
@@ -149,7 +178,7 @@ class SigmoidComparison(Comparison):
         init_params[id_] = self.weight  # reuse weight to control softmax temperature
 
         def _torch_wrapped_calc_argmax_approx(x, axis, params):
-            x_t = torch.as_tensor(x)
+            x_t = _as_tensor(x)
             axis = axis % x_t.dim()
             weight = torch.as_tensor(params[id_], dtype=x_t.dtype, device=x_t.device)
             literals = enumerate_literals(tuple(x_t.shape), axis=axis,
@@ -195,7 +224,7 @@ class SoftRounding(Rounding):
         """Soft floor that does not rely on mutable init_params keys.
            It does not support changing weights while running."""
         def _torch_wrapped_calc_floor_approx(x, params):
-            x_t = torch.as_tensor(x)
+            x_t = _as_tensor(x)
             param = torch.as_tensor(self.weight, dtype=x_t.dtype, device=x_t.device)
             denom = torch.tanh(param / 4.0)
             floor = (torch.sigmoid(param * (x_t - torch.floor(x_t) - 1.0)) -
@@ -210,7 +239,7 @@ class SoftRounding(Rounding):
            It does not support changing weights while running.
         """
         def _torch_wrapped_calc_round_approx(x, params):
-            x_t = torch.as_tensor(x)
+            x_t = _as_tensor(x)
             param = torch.as_tensor(self.weight, dtype=x_t.dtype, device=x_t.device)
             m = torch.floor(x_t) + 0.5
             rounded = m + 0.5 * torch.tanh(param * (x_t - m)) / torch.tanh(param / 2.0)
@@ -465,7 +494,7 @@ class SoftRandomSampling(RandomSampling):
 
         def _torch_wrapped_calc_discrete_gumbel_softmax(key, prob, params):
             gen = self._get_generator(key)
-            prob_t = torch.as_tensor(prob, dtype=logic.REAL)
+            prob_t = _as_tensor(prob, dtype=logic.REAL)
             U = torch.rand(prob_t.shape, generator=gen, device=prob_t.device, dtype=prob_t.dtype)
             gumbel = -torch.log(-torch.log(U.clamp_min(logic.eps)))  # standard Gumbel(0,1)
             sample = gumbel + torch.log(prob_t + logic.eps)
@@ -477,7 +506,7 @@ class SoftRandomSampling(RandomSampling):
         argmax_approx = logic.argmax(id, init_params)
         def _torch_wrapped_calc_poisson_gumbel_softmax(key, rate, params):
             gen = self._get_generator(key)
-            rate_t = torch.as_tensor(rate, dtype=logic.REAL)
+            rate_t = _as_tensor(rate, dtype=logic.REAL)
             ks = torch.arange(self.poisson_bins, dtype=logic.REAL, device=rate_t.device)
             view_shape = [1] * rate_t.dim() + [self.poisson_bins]
             ks = ks.view(*view_shape)
@@ -496,7 +525,7 @@ class SoftRandomSampling(RandomSampling):
         def _torch_wrapped_calc_poisson_exponential(key, rate, params):
             gen = self._get_generator(key)
 
-            rate_t = torch.as_tensor(rate, dtype=logic.REAL)
+            rate_t = _as_tensor(rate, dtype=logic.REAL)
             shape = (self.poisson_bins,) + tuple(rate_t.shape)
             U = torch.rand(shape, generator=gen, device=rate_t.device, dtype=logic.REAL)
             Exp1 = -torch.log(U.clamp_min(logic.eps))  # exponential(1) samples
@@ -511,7 +540,7 @@ class SoftRandomSampling(RandomSampling):
     def _poisson_normal_approx(self, logic):
         def _torch_wrapped_calc_poisson_normal_approx(key, rate, params):
             gen = self._get_generator(key)
-            rate_t = torch.as_tensor(rate, dtype=logic.REAL)
+            rate_t = _as_tensor(rate, dtype=logic.REAL)
             normal = torch.randn(rate_t.shape, generator=gen, device=rate_t.device, dtype=logic.REAL)
             sample = rate_t + torch.sqrt(rate_t) * normal  # Normal(rate, rate)
             return sample, params
@@ -549,7 +578,7 @@ class SoftRandomSampling(RandomSampling):
             return torch.ones_like(rate_tensor)  # fallback avoids crashing when cdf unavailable
 
         def _torch_wrapped_calc_poisson_approx(key, rate, params):
-            rate_t = torch.as_tensor(rate, dtype=logic.REAL)
+            rate_t = _as_tensor(rate, dtype=logic.REAL)
             if self.poisson_bins > 0:
                 cuml_prob = _poisson_cdf_bins(rate_t)
                 small_rate = cuml_prob >= self.poisson_min_cdf  # truncate if mass within bins
@@ -565,7 +594,7 @@ class SoftRandomSampling(RandomSampling):
     def _binomial_normal_approx(self, logic):
         def _torch_wrapped_calc_binomial_normal_approx(key, trials, prob, params):
             gen = self._get_generator(key)
-            trials_t = torch.as_tensor(trials, dtype=logic.REAL)
+            trials_t = _as_tensor(trials, dtype=logic.REAL, device=_infer_device(trials, prob))
             prob_t = torch.as_tensor(prob, dtype=logic.REAL, device=trials_t.device)
             normal = torch.randn(trials_t.shape, generator=gen, device=trials_t.device, dtype=logic.REAL)
             mean = trials_t * prob_t
@@ -580,7 +609,7 @@ class SoftRandomSampling(RandomSampling):
 
         def _torch_wrapped_calc_binomial_gumbel_softmax(key, trials, prob, params):
             gen = self._get_generator(key)
-            trials_t = torch.as_tensor(trials, dtype=logic.REAL)
+            trials_t = _as_tensor(trials, dtype=logic.REAL, device=_infer_device(trials, prob))
             prob_t = torch.as_tensor(prob, dtype=logic.REAL, device=trials_t.device)
             ks = torch.arange(self.binomial_bins, dtype=logic.REAL, device=trials_t.device)
             view_shape = [1] * trials_t.dim() + [self.binomial_bins]
@@ -609,7 +638,7 @@ class SoftRandomSampling(RandomSampling):
         _torch_wrapped_calc_binomial_gs = self._binomial_gumbel_softmax(id, init_params, logic)
 
         def _torch_wrapped_calc_binomial_approx(key, trials, prob, params):
-            trials_t = torch.as_tensor(trials, dtype=logic.REAL)
+            trials_t = _as_tensor(trials, dtype=logic.REAL, device=_infer_device(trials, prob))
             prob_t = torch.as_tensor(prob, dtype=logic.REAL, device=trials_t.device)
             small_trials = trials_t < self.binomial_bins  # switch to normal approx when large
             small_sample, params = _torch_wrapped_calc_binomial_gs(key, trials_t, prob_t, params)
@@ -624,7 +653,7 @@ class SoftRandomSampling(RandomSampling):
 
         def _torch_wrapped_calc_negative_binomial_approx(key, trials, prob, params):
             gen = self._get_generator(key)
-            trials_t = torch.as_tensor(trials, dtype=logic.REAL)
+            trials_t = _as_tensor(trials, dtype=logic.REAL, device=_infer_device(trials, prob))
             prob_t = torch.as_tensor(prob, dtype=logic.REAL, device=trials_t.device)
             # gamma-poisson mixture for Negative Binomial
             Gamma = torch.distributions.Gamma(trials_t, torch.tensor(1.0, dtype=logic.REAL,
@@ -640,7 +669,7 @@ class SoftRandomSampling(RandomSampling):
 
         def _torch_wrapped_calc_geometric_approx(key, prob, params):
             gen = self._get_generator(key)
-            prob_t = torch.as_tensor(prob, dtype=logic.REAL)
+            prob_t = _as_tensor(prob, dtype=logic.REAL)
             U = torch.rand(prob_t.shape, generator=gen, device=prob_t.device, dtype=logic.REAL)
             # inverse-CDF using soft floor
             floor, params = approx_floor(torch.log1p(-U) / torch.log1p(-prob_t + logic.eps), params)
@@ -654,7 +683,7 @@ class SoftRandomSampling(RandomSampling):
 
         def _torch_wrapped_calc_bernoulli_uniform(key, prob, params):
             gen = self._get_generator(key)
-            prob_t = torch.as_tensor(prob, dtype=logic.REAL)
+            prob_t = _as_tensor(prob, dtype=logic.REAL)
             U = torch.rand(prob_t.shape, generator=gen, device=prob_t.device, dtype=logic.REAL)
             return less_approx(U, prob_t, params)
 
@@ -664,7 +693,7 @@ class SoftRandomSampling(RandomSampling):
         discrete_approx = self.discrete(id, init_params, logic)
 
         def _torch_wrapped_calc_bernoulli_gumbel_softmax(key, prob, params):
-            prob_t = torch.as_tensor(prob, dtype=logic.REAL)
+            prob_t = _as_tensor(prob, dtype=logic.REAL)
             prob = torch.stack([1.0 - prob_t, prob_t], dim=-1)  # two-class categorical
             return discrete_approx(key, prob, params)
 
@@ -685,7 +714,7 @@ class Determinization(RandomSampling):
 
     @staticmethod
     def _torch_wrapped_calc_discrete_determinized(key, prob, params):
-        prob_t = torch.as_tensor(prob)
+        prob_t = _as_tensor(prob)
         literals = enumerate_literals(tuple(prob_t.shape), axis=-1, dtype=prob_t.dtype, device=prob_t.device)
         sample = torch.sum(literals * prob_t, dim=-1)  # expected value of categorical
         return sample, params
@@ -772,7 +801,7 @@ class SoftControlFlow(ControlFlow):
         init_params[id_] = self.weight  # store temperature per call
 
         def _torch_wrapped_calc_switch_soft(pred, cases, params):
-            cases_t = torch.as_tensor(cases)
+            cases_t = _as_tensor(cases)
             pred_t = torch.as_tensor(pred, dtype=cases_t.dtype, device=cases_t.device)
             literals = enumerate_literals(tuple(cases_t.shape), axis=0,
                                           dtype=cases_t.dtype, device=cases_t.device)
@@ -1191,7 +1220,7 @@ class ExactLogic(Logic):
 
     def control_switch(self, id, init_params):
         def _torch_wrapped_calc_switch_exact(pred, cases, params):
-            cases_t = torch.as_tensor(cases)
+            cases_t = _as_tensor(cases)
             # `take_along_dim` requires int64/long indices even when the model
             # itself is running in 32-bit integer mode.
             pred_t = torch.as_tensor(pred, dtype=torch.long, device=cases_t.device)
@@ -1207,7 +1236,7 @@ class ExactLogic(Logic):
 
     @staticmethod
     def _torch_wrapped_calc_discrete_exact(key, prob, params):
-        prob_t = torch.as_tensor(prob)
+        prob_t = _as_tensor(prob)
         gen = key if isinstance(key, torch.Generator) else None
         sample = torch.multinomial(prob_t, num_samples=1, generator=gen).squeeze(-1)  # categorical draw
         sample = sample.to(prob_t.device, dtype=torch.int64)
@@ -1219,7 +1248,7 @@ class ExactLogic(Logic):
     @staticmethod
     def _torch_wrapped_calc_bernoulli_exact(key, prob, params):
         gen = key if isinstance(key, torch.Generator) else None
-        prob_t = torch.as_tensor(prob)
+        prob_t = _as_tensor(prob)
         return torch.bernoulli(prob_t, generator=gen), params
 
     def bernoulli(self, id, init_params):
@@ -1228,7 +1257,7 @@ class ExactLogic(Logic):
     def poisson(self, id, init_params):
         def _torch_wrapped_calc_poisson_exact(key, rate, params):
             gen = key if isinstance(key, torch.Generator) else None
-            rate_t = torch.as_tensor(rate, dtype=self.REAL)
+            rate_t = _as_tensor(rate, dtype=self.REAL)
             sample = torch.poisson(rate_t, generator=gen).to(self.INT)  # torch poisson supports generator
             return sample, params
         return _torch_wrapped_calc_poisson_exact
@@ -1236,7 +1265,7 @@ class ExactLogic(Logic):
     def geometric(self, id, init_params):
         def _torch_wrapped_calc_geometric_exact(key, prob, params):
             gen = key if isinstance(key, torch.Generator) else None
-            prob_t = torch.as_tensor(prob, dtype=self.REAL)
+            prob_t = _as_tensor(prob, dtype=self.REAL)
             U = torch.rand(prob_t.shape, generator=gen, device=prob_t.device, dtype=self.REAL)
             sample = torch.floor(torch.log1p(-U) / torch.log1p(-prob_t)) + 1  # inverse-CDF
             sample = sample.to(self.INT)
@@ -1245,7 +1274,7 @@ class ExactLogic(Logic):
 
     def binomial(self, id, init_params):
         def _torch_wrapped_calc_binomial_exact(key, trials, prob, params):
-            trials_t = torch.as_tensor(trials, dtype=self.REAL)
+            trials_t = _as_tensor(trials, dtype=self.REAL, device=_infer_device(trials, prob))
             prob_t = torch.as_tensor(prob, dtype=self.REAL, device=trials_t.device)
             dist = torch.distributions.Binomial(total_count=trials_t, probs=prob_t)  # vectorized Bin(n,p)
             sample = dist.sample().to(self.INT)
@@ -1254,7 +1283,7 @@ class ExactLogic(Logic):
 
     def negative_binomial(self, id, init_params):
         def _torch_wrapped_calc_negative_binomial_exact(key, trials, prob, params):
-            trials_t = torch.as_tensor(trials, dtype=self.REAL)
+            trials_t = _as_tensor(trials, dtype=self.REAL, device=_infer_device(trials, prob))
             prob_t = torch.as_tensor(prob, dtype=self.REAL, device=trials_t.device)
             dist = torch.distributions.NegativeBinomial(total_count=trials_t, probs=1.0 - prob_t)
             sample = dist.sample().to(self.INT)

@@ -12,6 +12,7 @@ from torch.nn import functional as F
 
 from pyRDDLGym.core.env import RDDLEnv
 from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
+from StochasticPBBP.utils.device import make_generator, resolve_torch_device
 from StochasticPBBP.utils.seeder import BaseSeeder
 
 TensorDict = Dict[str, torch.Tensor]
@@ -164,7 +165,10 @@ class MBDPOPolicy(ABC):
             name = spec['name']
             if name not in normalized:
                 continue
-            tensor = self._as_tensor(normalized[name]).to(device=spec['device'])
+            tensor = self._as_tensor(normalized[name]).to(
+                dtype=spec['dtype'],
+                device=spec['device'],
+            )
             if tuple(tensor.shape) != spec['shape']:
                 tensor = self._strip_leading_singletons(tensor)
             normalized[name] = tensor
@@ -199,6 +203,7 @@ class MBDPOPolicy(ABC):
                 'name': name,
                 'shape': tuple(tensor.shape),
                 'numel': int(tensor.numel()),
+                'dtype': tensor.dtype,
                 'device': tensor.device,
             })
         return specs
@@ -250,7 +255,10 @@ class MBDPOPolicy(ABC):
             name = spec['name']
             if name not in observation:
                 raise KeyError(f'Missing observation fluent <{name}>.')
-            tensor = self._as_tensor(observation[name]).to(device=spec['device'])
+            tensor = self._as_tensor(observation[name]).to(
+                dtype=spec['dtype'],
+                device=spec['device'],
+            )
             if tuple(tensor.shape) != spec['shape']:
                 raise ValueError(
                     f'Observation <{name}> must have shape {spec["shape"]}, '
@@ -279,12 +287,24 @@ class MBDPOPolicy(ABC):
 
 class NeuralStateFeedbackPolicy(MBDPOPolicy, nn.Module):
     def __init__(self, observation_template: TensorDict, action_template: TensorDict, action_space: Any,
-                 hidden_sizes: Tuple[int, ...] = (64, 64), seed: Optional[int]=None) -> None:
+                 hidden_sizes: Tuple[int, ...] = (12, 12), seed: Optional[int]=None,
+                 device: Optional[torch.device | str]=None) -> None:
         super().__init__()
         if not observation_template:
             raise ValueError('observation_template must contain at least one tensor.')
         if not action_template:
             raise ValueError('action_template must contain at least one tensor.')
+        resolved_device = resolve_torch_device(
+            device if device is not None else next(iter(observation_template.values())).device
+        )
+        observation_template = {
+            name: _as_tensor(value, device=resolved_device)
+            for name, value in observation_template.items()
+        }
+        action_template = {
+            name: _as_tensor(value, device=resolved_device)
+            for name, value in action_template.items()
+        }
 
         self.observation_specs = self._build_observation_specs(observation_template)
         self.action_specs = self._build_action_specs(action_template, action_space)
@@ -292,7 +312,7 @@ class NeuralStateFeedbackPolicy(MBDPOPolicy, nn.Module):
         self.dtype = torch.float32
         self.g = None
         if seed is not None:
-            self.g = torch.Generator().manual_seed(seed)
+            self.g = make_generator(seed=seed, device=self.device)
 
         layers = []
         input_dim = sum(spec['numel'] for spec in self.observation_specs)
@@ -303,6 +323,7 @@ class NeuralStateFeedbackPolicy(MBDPOPolicy, nn.Module):
         output_dim = sum(spec['numel'] for spec in self.action_specs)
         layers.append(nn.Linear(input_dim, output_dim))
         self.network = nn.Sequential(*layers)
+        self.network = self.network.to(self.device)
 
         # Default to Xavier init because the network uses Tanh hidden layers.
         self.network.apply(self._init_weights_xavier)
@@ -413,13 +434,25 @@ class StationaryMarkov(nn.Module):
                  observation_template: TensorDict,
                  action_template: TensorDict,
                  action_space: Any,
-                 hidden_sizes: Tuple[int, ...]=(64, 64),
-                 init_weights_fn: str='xavier') -> None:
+                 hidden_sizes: Tuple[int, ...]=(12, 12),
+                 init_weights_fn: str='xavier',
+                 device: Optional[torch.device | str]=None) -> None:
         super().__init__()
         if not observation_template:
             raise ValueError('observation_template must contain at least one tensor.')
         if not action_template:
             raise ValueError('action_template must contain at least one tensor.')
+        resolved_device = resolve_torch_device(
+            device if device is not None else next(iter(observation_template.values())).device
+        )
+        observation_template = {
+            name: _as_tensor(value, device=resolved_device)
+            for name, value in observation_template.items()
+        }
+        action_template = {
+            name: _as_tensor(value, device=resolved_device)
+            for name, value in action_template.items()
+        }
 
         self.observation_specs = self._build_observation_specs(observation_template)
         self.action_specs = self._build_action_specs(action_template, action_space)
@@ -435,6 +468,7 @@ class StationaryMarkov(nn.Module):
         output_dim = sum(spec['numel'] for spec in self.action_specs)
         layers.append(nn.Linear(input_dim, output_dim))
         self.network = nn.Sequential(*layers)
+        self.network = self.network.to(self.device)
         # Default to Xavier init because the network uses Tanh hidden layers.
         self._initialize_network(init_weights_fn)
 
@@ -451,6 +485,7 @@ class StationaryMarkov(nn.Module):
                 'name': name,
                 'shape': tuple(tensor.shape),
                 'numel': int(tensor.numel()),
+                'dtype': tensor.dtype,
                 'device': tensor.device,
             })
         return specs
@@ -523,7 +558,10 @@ class StationaryMarkov(nn.Module):
             name = spec['name']
             if name not in observation:
                 raise KeyError(f'Missing observation fluent <{name}>.')
-            tensor = self._as_tensor(observation[name]).to(device=spec['device'])
+            tensor = self._as_tensor(observation[name]).to(
+                dtype=spec['dtype'],
+                device=spec['device'],
+            )
             if tuple(tensor.shape) != spec['shape']:
                 raise ValueError(
                     f'Observation <{name}> must have shape {spec["shape"]}, '
@@ -617,10 +655,18 @@ class GaussianPolicy(nn.Module):
                  action_template: TensorDict,
                  init_std: float=1.0,
                  min_log_std: float=-5.0,
-                 max_log_std: float=2.0) -> None:
+                 max_log_std: float=2.0,
+                 device: Optional[torch.device | str]=None) -> None:
         super().__init__()
         if not action_template:
             raise ValueError('action_template must contain at least one tensor.')
+        resolved_device = resolve_torch_device(
+            device if device is not None else next(iter(action_template.values())).device
+        )
+        action_template = {
+            name: _as_tensor(value, device=resolved_device)
+            for name, value in action_template.items()
+        }
 
         first_action = next(iter(action_template.values()))
         self.device = first_action.device
@@ -686,12 +732,24 @@ class state2action(nn.Module):
     def __init__(self,
                  observation_template: TensorDict,
                  action_template: TensorDict,
-                 hidden_sizes: Tuple[int, ...] = (12, 12)) -> None:
+                 hidden_sizes: Tuple[int, ...] = (12, 12),
+                 device: Optional[torch.device | str]=None) -> None:
         super().__init__()
         if not observation_template:
             raise ValueError('observation_template must contain at least one tensor.')
         if not action_template:
             raise ValueError('action_template must contain at least one tensor.')
+        resolved_device = resolve_torch_device(
+            device if device is not None else next(iter(observation_template.values())).device
+        )
+        observation_template = {
+            name: _as_tensor(value, device=resolved_device)
+            for name, value in observation_template.items()
+        }
+        action_template = {
+            name: _as_tensor(value, device=resolved_device)
+            for name, value in action_template.items()
+        }
 
         self.observation_specs = self._build_observation_specs(observation_template)
         self.action_specs = self._build_action_specs(action_template)
@@ -707,6 +765,7 @@ class state2action(nn.Module):
         output_dim = sum(spec['numel'] for spec in self.action_specs)
         layers.append(nn.Linear(input_dim, output_dim))
         self.network = nn.Sequential(*layers)
+        self.network = self.network.to(self.device)
 
     @staticmethod
     def _as_tensor(value: Any) -> torch.Tensor:
@@ -734,6 +793,7 @@ class state2action(nn.Module):
                 'name': name,
                 'shape': tuple(tensor.shape),
                 'numel': int(tensor.numel()),
+                'dtype': tensor.dtype,
                 'device': tensor.device,
             })
         return specs
@@ -797,7 +857,10 @@ class state2action(nn.Module):
             name = spec['name']
             if name not in observation:
                 raise KeyError(f'Missing observation fluent <{name}>.')
-            tensor = self._as_tensor(observation[name]).to(device=spec['device'])
+            tensor = self._as_tensor(observation[name]).to(
+                dtype=spec['dtype'],
+                device=spec['device'],
+            )
             if tuple(tensor.shape) != spec['shape']:
                 raise ValueError(
                     f'Observation <{name}> must have shape {spec["shape"]}, '

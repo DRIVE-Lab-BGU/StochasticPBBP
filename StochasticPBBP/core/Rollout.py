@@ -14,6 +14,7 @@ from pyRDDLGym.core.compiler.model import RDDLLiftedModel
 from pyRDDLGym.core.debug.logger import Logger
 from StochasticPBBP.core.Compiler import TorchRDDLCompiler
 from StochasticPBBP.utils.Noise import AdditiveNoise, NoiseContext, NoAdditiveNoise
+from StochasticPBBP.utils.device import as_tensor_on_device, make_generator, resolve_torch_device
 
 TensorDict = Dict[str, torch.Tensor]
 PolicyOutput = Union[TensorDict, Tuple[TensorDict, Any]]
@@ -36,6 +37,10 @@ class RolloutTrace:
     @property
     def return_(self) -> torch.Tensor:
         if not self.rewards:
+            for value in self.final_observation.values():
+                if isinstance(value, torch.Tensor):
+                    dtype = value.dtype if value.dtype.is_floating_point else torch.float32
+                    return torch.zeros((), dtype=dtype, device=value.device)
             return torch.tensor(0.0)
         return torch.stack(self.rewards, dim=0).sum(dim=0)
 
@@ -60,18 +65,33 @@ class TorchRolloutCell(nn.Module):
                  device: Optional[Union[str, torch.device]]=None,
                  **compiler_args) -> None:
         super().__init__()
+        resolved_device_arg = device if device is not None else (
+            str(key.device) if key is not None else None
+        )
+        self.device = resolve_torch_device(resolved_device_arg)
         if key is None:
-            key = torch.Generator()
-            key.manual_seed(round(time.time() * 1000))
+            key = make_generator(seed=round(time.time() * 1000), device=self.device)
+        else:
+            key_device = torch.device(str(key.device))
+            if key_device.type != self.device.type or (
+                self.device.index is not None and key_device.index not in {None, self.device.index}
+            ):
+                raise ValueError(
+                    f'Rollout generator device {key_device} does not match rollout device {self.device}.'
+                )
         self.key = key
         self.rddl = rddl_model
         self.horizon = rddl_model.horizon if horizon is None else horizon
         self.logger = logger
-        self.device = torch.device(device) if device is not None else torch.device('cpu')
         # for example - logic 
-        self.compiler_args = compiler_args
+        self.compiler_args = dict(compiler_args)
+        self.compiler_args.setdefault('device', self.device)
 
-        compiled = TorchRDDLCompiler(rddl_model, logger=logger, **compiler_args)
+        compiled = TorchRDDLCompiler(
+            rddl_model,
+            logger=logger,
+            **self.compiler_args,
+        )
         compiled.compile(log_expr=False, heading='ROLLOUT MODEL')
 
         self.compiler = compiled
@@ -208,11 +228,10 @@ class TorchRolloutCell(nn.Module):
             return tensor.to(dtype=reference.dtype, device=reference.device)
         return value
 
-    @staticmethod
-    def _ensure_tensor(value: Any) -> torch.Tensor:
+    def _ensure_tensor(self, value: Any) -> torch.Tensor:
         if isinstance(value, torch.Tensor):
-            return value
-        return torch.as_tensor(value)
+            return value.to(device=self.device)
+        return as_tensor_on_device(value, device=self.device)
 
     @staticmethod
     def _to_bool(value: Any) -> bool:

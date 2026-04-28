@@ -1,4 +1,3 @@
-
 import torch
 from typing import Dict, Optional, Union
 
@@ -8,6 +7,7 @@ from pyRDDLGym.core.debug.exception import (
     RDDLTypeError
 )
 from pyRDDLGym.core.debug.logger import Logger
+from StochasticPBBP.utils.device import resolve_torch_device
 
 
 class RDDLValueInitializer:
@@ -15,23 +15,16 @@ class RDDLValueInitializer:
     in a RDDL domain + instance to scalars or torch tensors.
     '''
     
-    INT = torch.int64
-    REAL = torch.float64
-        
-    TORCH_TYPES = {
-        'int': INT,
-        'real': REAL,
-        'bool': torch.bool
-    }
-    
     DEFAULT_VALUES = {
         'int': 0,
         'real': 0.0,
         'bool': False
     }
         
-    def __init__(self, rddl: RDDLPlanningModel, 
-                 logger: Optional[Logger]=None) -> None:
+    def __init__(self, rddl: RDDLPlanningModel,
+                 logger: Optional[Logger]=None,
+                 device: Optional[Union[str, torch.device]]=None,
+                 use64bit: bool=False) -> None:
         '''Creates a new object to compile initial values from a RDDL file. 
         Initial values of parameterized variables are stored in numpy arrays.
         For a variable var(?x1, ?x2, ... ?xn), the numpy array has n dimensions, 
@@ -43,6 +36,20 @@ class RDDLValueInitializer:
         '''
         self.rddl = rddl
         self.logger = logger
+        self.device = resolve_torch_device(device)
+        self.use64bit = bool(use64bit)
+        if self.device.type == 'mps' and self.use64bit:
+            raise ValueError(
+                'MPS does not support float64 tensors. '
+                'Set use64bit=False or run on cpu/cuda.'
+            )
+        self.INT = torch.int64 if self.use64bit else torch.int32
+        self.REAL = torch.float64 if self.use64bit else torch.float32
+        self.TORCH_TYPES = {
+            'int': self.INT,
+            'real': self.REAL,
+            'bool': torch.bool,
+        }
     
     def initialize(self) -> Dict[str, Union[torch.Tensor, int, float, bool]]:
         '''Compiles all initial values of all variables for the current RDDL file.
@@ -82,13 +89,13 @@ class RDDLValueInitializer:
             
             # get default value and dtype
             default = RDDLValueInitializer.DEFAULT_VALUES.get(prange, None)
-            dtype = RDDLValueInitializer.TORCH_TYPES.get(prange, None)
+            dtype = self.TORCH_TYPES.get(prange, None)
             if default is None or dtype is None:
                 raise RDDLTypeError(
                     f'Range <{prange}> of pvariable <{var}> is not valid, '
                     f'must be an object type in {set(rddl.type_to_objects.keys())} '
                     f'or a numeric type in '
-                    f'{set(RDDLValueInitializer.DEFAULT_VALUES.keys())}.')
+                        f'{set(RDDLValueInitializer.DEFAULT_VALUES.keys())}.')
                         
             # convert a parameterized variable to dimensioned numpy array
             ptypes = rddl.variable_params[var]
@@ -96,10 +103,19 @@ class RDDLValueInitializer:
                 shape = rddl.object_counts(ptypes)     
                 values = init_values.get(var, None)           
                 if values is None:
-                    values = torch.full(size=shape, fill_value=default, dtype=dtype)
+                    values = torch.full(
+                        size=shape,
+                        fill_value=default,
+                        dtype=dtype,
+                        device=self.device,
+                    )
                 else:
                     values = torch.reshape(
-                        torch.tensor([(default if v is None else v) for v in values], dtype=dtype), 
+                        torch.tensor(
+                            [(default if v is None else v) for v in values],
+                            dtype=dtype,
+                            device=self.device,
+                        ),
                         shape=shape)
                     
                     # torch.can_cast expects dtypes (from_dtype, to_dtype), not tensors
@@ -117,7 +133,7 @@ class RDDLValueInitializer:
                         f'Initial values {values} of pvariable <{var}> '
                         f'can not all be cast to required type <{prange}>.')
 
-                tmp = torch.tensor(values)
+                tmp = torch.tensor(values, device=self.device)
                 # torch.can_cast expects dtypes (from_dtype, to_dtype)
                 if not torch.can_cast(tmp.dtype, dtype):
                     raise RDDLTypeError(
@@ -125,7 +141,7 @@ class RDDLValueInitializer:
                         f'can not all be cast to required type <{prange}>.')
 
                 # keep scalars as 0-dim tensors for consistency
-                values = torch.tensor(values, dtype=dtype)
+                values = torch.tensor(values, dtype=dtype, device=self.device)
 
             np_init_values[var] = values
         
