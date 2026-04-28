@@ -121,6 +121,7 @@ class ExperimentManager:
             std=self.noise["value"],
             start_std=self.noise["value"],
             end_std=self.noise["final"],
+            alpha = self.noise["alpha"],
             num_iterations=iterations,
             source=self.template_rollout,
         )
