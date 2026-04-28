@@ -189,5 +189,3 @@ def plot_csv_curves_from_folder(folder_path, output_file=None):
         plt.savefig(output_file, bbox_inches="tight")
     else:
         plt.show()
-
-
