@@ -30,9 +30,16 @@ runai-bgu submit cmd \
   -m "${MEMORY}" \
   -g "${GPU}" \
   --conda "${CONDA_ENV}" \
-  -- "cd code/StochasticBPPB && python -m StochasticBPPB.run --domain reservoir --instance 1 iterations 100
+  -- "cd code/StochasticBPPB && python -m StochasticBPPB.run --domain reservoir --instance 1 iterations 100"
 
 # runai submit -i registry.bgu.ac.il/hpc/jupyter-notebook:latest -e HOME=/gpfs0/bgu-ataitler/users/ataitler --name "$test" -g 0.5 --cpu-limit 4 -- "cd ~/code/StochasticBPPB && source activate ~/env/StochasticBPPB && python -m StochasticBPPB.run --domain ${domain} --instance ${i} --seeds ${seeds} --eval ${evals} --iterations ${iters} --noisetype ${noisetype} --noisestd ${noisestd} -e"
+
+
+
+# runai-bgu submit python -n test4 -c 4 -m 8Gi -g 1 --conda StochasticPBBP -- "python /gpfs0/bgu-ataitler/users/ataitler/code/StochasticPBBP/StochasticPBBP/run.py --domain reservoir --instance 3 --seeds 1 --eval 20 --iterations 2000 --noisetype constant --noisestd 3.0 -e"
+
+
+
 
 
 # Run the Python script $count times
