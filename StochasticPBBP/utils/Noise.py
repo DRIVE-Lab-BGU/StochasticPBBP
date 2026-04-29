@@ -17,8 +17,9 @@ if TYPE_CHECKING:
 
 
 class NoiseInfo(TypedDict):
-    type: str    # key with str value
-    value: float # key with float value
+    type: str    # noise type
+    value: float # std value
+    final: float # final std value
 
 @dataclass(frozen=True)
 class NoiseContext:
