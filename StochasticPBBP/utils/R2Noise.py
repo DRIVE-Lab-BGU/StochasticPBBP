@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -16,26 +15,19 @@ ActionReference = Tuple[int, str, torch.Tensor]
 
 
 class R2GradientAdditiveNoise(AdditiveNoise):
-    """Additive Gaussian noise driven by trajectory-level action sensitivity.
+    """Additive Gaussian noise driven by trajectory-level action gradients.
 
-    After an analysis rollout, the class computes for every floating action
-    tensor in the trajectory:
+    After an analysis rollout, the class computes a first-order sensitivity
+    score for every floating action tensor:
 
-    1. a first-order sensitivity from ``dJ / da_t``
-    2. a diagonal-Hessian curvature estimate from ``diag(d²J / da_t²)``
-    3. a combined per-action score
-    4. a per-timestep score aggregated across all actions at that timestep
+    1. collect ``dJ / da_t`` for all differentiable action tensors
+    2. reduce each action tensor to a scalar score via its gradient norm
+    3. aggregate action scores into one score per timestep
+    4. normalize timestep scores with a trajectory quantile
+    5. map the normalized score to a bounded ``sigma_t``
 
-    The timestep scores are robustly normalized by a trajectory quantile and
-    mapped to a bounded noise scale:
-
-        sigma_t =
-            sigma_min
-            + (sigma_max - sigma_min) * (1 - r_t)^alpha
-
-    where ``r_t`` is the clipped score normalized by the selected quantile.
-    The resulting scalar ``sigma_t`` is then broadcast over every floating
-    action tensor at timestep ``t``.
+    The scalar ``sigma_t`` is then broadcast over every floating action tensor
+    at timestep ``t`` during future rollout calls.
     """
 
     def __init__(self,
@@ -43,10 +35,10 @@ class R2GradientAdditiveNoise(AdditiveNoise):
                  scale: float=1.0,
                  eps: float=1e-6,
                  min_std: float=0.0,
-                 max_std: Optional[float]=None,
+                 max_std: Optional[float]=5.0,
                  alpha: float=1.0,
                  norm_scope: str='global',
-                 curvature_weight: float=1.0,
+                 curvature_weight: float=0.0,
                  curvature_reduce: str='mean_abs',
                  step_score_aggregate: str='mean',
                  normalization_quantile: float=0.95,
@@ -58,7 +50,7 @@ class R2GradientAdditiveNoise(AdditiveNoise):
             raise ValueError(f'eps must be positive, got {eps!r}.')
         if min_std < 0:
             raise ValueError(f'min_std must be non-negative, got {min_std!r}.')
-        if max_std is None or not math.isfinite(max_std):
+        if max_std is None or not torch.isfinite(torch.tensor(max_std)):
             raise ValueError(
                 'R2GradientAdditiveNoise requires a finite max_std for the '
                 'bounded timestep-noise rule.'
@@ -105,6 +97,8 @@ class R2GradientAdditiveNoise(AdditiveNoise):
         # quantile-based normalization operates on timestep scores across the
         # full trajectory regardless of this flag.
         self.norm_scope = normalized_scope
+        # Curvature arguments are accepted for backward compatibility but are
+        # ignored by the gradient-only implementation.
         self.curvature_weight = float(curvature_weight)
         self.curvature_reduce = normalized_curvature_reduce
         self.step_score_aggregate = normalized_step_aggregate
@@ -184,7 +178,7 @@ class R2GradientAdditiveNoise(AdditiveNoise):
         references, differentiable_inputs, differentiable_locations = self._collect_action_references(
             trace=trace,
         )
-        grad_map, curvature_map = self._collect_action_sensitivities(
+        grad_map = self._collect_action_gradients(
             references=references,
             differentiable_inputs=differentiable_inputs,
             differentiable_locations=differentiable_locations,
@@ -199,15 +193,16 @@ class R2GradientAdditiveNoise(AdditiveNoise):
             references=references,
             step_scores=step_scores,
         )
+        profile = self._build_std_profile(
+            references=references,
+            step_scores=step_scores,
+        )
         self.set_profile(profile)
         self.last_gradients = self._materialize_gradient_profile(
             references=references,
             grad_map=grad_map,
         )
-        self.last_curvatures = self._materialize_scalar_profile(
-            references=references,
-            scalar_map=curvature_map,
-        )
+
         self.last_action_scores = self._materialize_scalar_profile(
             references=references,
             scalar_map=action_score_map,
@@ -258,17 +253,15 @@ class R2GradientAdditiveNoise(AdditiveNoise):
 
         return references, differentiable_inputs, differentiable_locations
 
-    def _collect_action_sensitivities(
+    def _collect_action_gradients(
         self,
         *,
         references: Sequence[ActionReference],
         differentiable_inputs: Sequence[torch.Tensor],
         differentiable_locations: Sequence[ActionLocation],
         objective: torch.Tensor,
-    ) -> Tuple[Dict[ActionLocation, torch.Tensor], Dict[ActionLocation, float]]:
+    ) -> Dict[ActionLocation, torch.Tensor]:
         grad_map: Dict[ActionLocation, torch.Tensor] = {}
-        curvature_map: Dict[ActionLocation, float] = {}
-        needs_curvature = self.curvature_weight > 0.0
 
         if differentiable_inputs and (objective.requires_grad or objective.grad_fn is not None):
             gradients = torch.autograd.grad(
@@ -283,14 +276,8 @@ class R2GradientAdditiveNoise(AdditiveNoise):
                 differentiable_inputs,
                 gradients,
             ):
-                if gradient is None:
-                    grad_map[location] = torch.zeros_like(reference)
-                    curvature_map[location] = 0.0
-                    continue
-                grad_map[location] = gradient.detach().clone()
-                curvature_map[location] = (
-                    self._estimate_curvature(reference=reference, gradient=gradient)
-                    if needs_curvature else 0.0
+                grad_map[location] = (
+                    torch.zeros_like(reference) if gradient is None else gradient.detach().clone()
                 )
 
         for step_index, name, value in references:
@@ -302,51 +289,13 @@ class R2GradientAdditiveNoise(AdditiveNoise):
 
         return grad_map, curvature_map
 
-    def _estimate_curvature(self,
-                            *,
-                            reference: torch.Tensor,
-                            gradient: torch.Tensor) -> float:
-        flat_gradient = gradient.reshape(-1)
-        if flat_gradient.numel() == 0 or not gradient.requires_grad:
-            return 0.0
-
-        diagonal_terms: List[torch.Tensor] = []
-        for index, gradient_element in enumerate(flat_gradient):
-            if not gradient_element.requires_grad:
-                diagonal_terms.append(reference.new_zeros(()))
-                continue
-            second_derivative = torch.autograd.grad(
-                outputs=gradient_element,
-                inputs=reference,
-                allow_unused=True,
-                retain_graph=True,
-                create_graph=False,
-            )[0]
-            if second_derivative is None:
-                diagonal_terms.append(reference.new_zeros(()))
-                continue
-            flat_second = second_derivative.reshape(-1)
-            diagonal_terms.append(flat_second[index].detach())
-
-        if not diagonal_terms:
-            return 0.0
-        diagonal = torch.stack(diagonal_terms)
-        diagonal = torch.nan_to_num(diagonal, nan=0.0, posinf=0.0, neginf=0.0)
-        return self._reduce_curvature(diagonal)
-
-    def _reduce_curvature(self, diagonal: torch.Tensor) -> float:
-        if diagonal.numel() == 0:
-            return 0.0
-        if self.curvature_reduce == 'mean_abs':
-            return float(diagonal.abs().mean().item())
-        return float(torch.linalg.vector_norm(diagonal).item())
+        return grad_map
 
     def _build_step_scores(
         self,
         *,
         references: Sequence[ActionReference],
         grad_map: Dict[ActionLocation, torch.Tensor],
-        curvature_map: Dict[ActionLocation, float],
     ) -> Tuple[Dict[ActionLocation, float], List[float]]:
         if not references:
             return {}, []
@@ -357,12 +306,7 @@ class R2GradientAdditiveNoise(AdditiveNoise):
 
         for step_index, name, _ in references:
             location = (step_index, name)
-            gradient_norm = self._gradient_tensor_norm(grad_map[location])
-            curvature = curvature_map[location]
-            score = math.sqrt(
-                gradient_norm * gradient_norm
-                + self.curvature_weight * curvature * curvature
-            )
+            score = self._gradient_tensor_norm(grad_map[location])
             action_score_map[location] = score
             per_step_action_scores[step_index].append(score)
 

@@ -90,6 +90,7 @@ class MBDPOPolicy(ABC):
 
                 # take a step in the environment
                 state = self._unpack_observation(state)
+                state = self._normalize_external_observation(state)
                 action = self.sample_action(observation=state, training_mode=False)
                 action = self._action_to_env_dict(action)
                 next_state, reward, terminated, truncated, _ = env.step(action)
@@ -146,6 +147,28 @@ class MBDPOPolicy(ABC):
                 raise ValueError('env.reset() returned an empty tuple.')
             return reset_result[0]
         return reset_result
+
+    @staticmethod
+    def _strip_leading_singletons(tensor: torch.Tensor) -> torch.Tensor:
+        while tensor.ndim > 0 and tensor.shape[0] == 1:
+            tensor = tensor.reshape(tensor.shape[1:])
+        return tensor
+
+    def _normalize_external_observation(self, observation: Dict[str, Any]) -> Dict[str, Any]:
+        specs = getattr(self, 'observation_specs', None)
+        if specs is None:
+            return observation
+
+        normalized: Dict[str, Any] = dict(observation)
+        for spec in specs:
+            name = spec['name']
+            if name not in normalized:
+                continue
+            tensor = self._as_tensor(normalized[name]).to(device=spec['device'])
+            if tuple(tensor.shape) != spec['shape']:
+                tensor = self._strip_leading_singletons(tensor)
+            normalized[name] = tensor
+        return normalized
 
     def _action_to_env_dict(self, action: Dict[str, Any]) -> Dict[str, Any]:
         env_action: Dict[str, Any] = {}

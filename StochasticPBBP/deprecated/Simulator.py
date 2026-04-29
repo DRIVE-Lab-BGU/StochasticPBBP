@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-from StochasticPBBP.deprecated.Noise import noise
+from  StochasticPBBP.deprecated.Noise import noise
 
 from ast import Return
 import time
