@@ -26,6 +26,6 @@ instance inst_hvac_1c {
 		temp-heater(h3) = 9.631881262327656;
 	};
 	max-nondef-actions = pos-inf;
-	horizon = 100;
+	horizon = 120;
 	discount = 1.0;
 }
