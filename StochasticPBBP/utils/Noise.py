@@ -597,7 +597,7 @@ class AdditiveNoiseFactory:
             r2_noise = R2GradientAdditiveNoise(
                 scale=1.0,
                 eps=1e-6,
-                min_std=1,
+                min_std=end_std,
                 max_std=std,
                 alpha=alpha,# for linear 1.0
                 norm_scope='global',
