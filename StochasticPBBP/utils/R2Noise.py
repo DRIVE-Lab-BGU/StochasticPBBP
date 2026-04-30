@@ -187,11 +187,6 @@ class R2GradientAdditiveNoise(AdditiveNoise):
         action_score_map, step_scores = self._build_step_scores(
             references=references,
             grad_map=grad_map,
-            curvature_map=curvature_map,
-        )
-        profile = self._build_std_profile(
-            references=references,
-            step_scores=step_scores,
         )
         profile = self._build_std_profile(
             references=references,
@@ -268,8 +263,8 @@ class R2GradientAdditiveNoise(AdditiveNoise):
                 outputs=objective,
                 inputs=list(differentiable_inputs),
                 allow_unused=True,
-                retain_graph=needs_curvature,
-                create_graph=needs_curvature,
+                retain_graph=False,
+                create_graph=False,
             )
             for location, reference, gradient in zip(
                 differentiable_locations,
@@ -284,10 +279,6 @@ class R2GradientAdditiveNoise(AdditiveNoise):
             location = (step_index, name)
             if location not in grad_map:
                 grad_map[location] = torch.zeros_like(value)
-            if location not in curvature_map:
-                curvature_map[location] = 0.0
-
-        return grad_map, curvature_map
 
         return grad_map
 
