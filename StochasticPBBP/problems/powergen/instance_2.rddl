@@ -37,6 +37,6 @@ instance inst_power_gen_2c {
 		temperature = -5.338345413331652;
 	};
 	max-nondef-actions = pos-inf;
-	horizon = 100;
+	horizon = 120;
 	discount = 1.0;
 }

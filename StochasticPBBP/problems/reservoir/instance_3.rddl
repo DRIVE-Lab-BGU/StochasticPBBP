@@ -86,6 +86,6 @@ instance inst_reservoir_control_cont_3c {
 		rlevel(t10) = 85.09888760368129;
 	};
 	max-nondef-actions = pos-inf;
-	horizon = 1000;
+	horizon = 120;
 	discount = 1.0;
 }

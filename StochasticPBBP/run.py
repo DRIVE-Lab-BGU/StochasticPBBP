@@ -51,8 +51,11 @@ def main(args) -> None:
         eval = "exact"
     else:
         eval = "train"
+    postfix = ""
+    if args.noisetype == "gradient2noise":
+        postfix = "_alpha" + str(args.alpha) + "_smin" + str(args.noisestdend)
     logname = "returns_horizon" + str(args.horizon) + "_weight" + str(args.weight) + "_noise_" + str(
-        args.noisetype) + str(args.noisestd) + "_"+ eval+".csv"
+        args.noisetype) + str(args.noisestd) + postfix + "_" + eval + ".csv"
     manager.log(file_name=logname, iterations=iterations, returns=returns, stds=stds)
 
 
