@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 from StochasticPBBP.core.Logic import ExactLogic
 from StochasticPBBP.core.Rollout import TorchRollout
 
-DOMAIN_PATH = PACKAGE_ROOT / "problems" / "powergen" / "domain.rddl"
+DOMAIN_PATH = PACKAGE_ROOT / "problems" / "powergen" / "domain_old.rddl"
 INSTANCE_PATH = PACKAGE_ROOT / "problems" / "powergen" / "instance_1.rddl"
 INSTANCE_NAME = "inst_power_gen_1c"
 PLANT_NAMES = ("p1", "p2")
@@ -97,11 +97,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fuzzy-weight",
         type=float,
-        default=100.0,
+        default=0.01,
         help=(
             "Single weight shared by SigmoidComparison, SoftRounding, and "
             "SoftControlFlow whenever FuzzyLogic is used."
-        ),
+        )
     )
     parser.add_argument(
         "--output-dir",
