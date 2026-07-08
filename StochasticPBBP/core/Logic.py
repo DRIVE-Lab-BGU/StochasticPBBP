@@ -243,7 +243,8 @@ class StandardComplement(Complement):
 
     @staticmethod
     def _torch_wrapped_calc_not_approx(x, params):
-        return 1.0 - x, params
+        x_t = torch.as_tensor(x, dtype=torch.float32)
+        return 1.0 - x_t, params
 
     def __call__(self, id, init_params):
         return self._torch_wrapped_calc_not_approx
