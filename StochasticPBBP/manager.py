@@ -62,8 +62,11 @@ class ExperimentManager:
         self.output_folder = output_folder
         self.last_sigma_artifacts: Optional[Dict[str, Any]] = None
 
-        seed_start = int(str(time.time_ns())[10:13])
-        self.train_seeder = FibonacciSeeder(seed_start)
+        # i dont wnat. different seeds for each run i want to be able to reproduce 
+        # the same results with the same seed.
+        #seed_start = int(str(time.time_ns())[10:13])
+
+        self.train_seeder = FibonacciSeeder(self.seed)
         self.eval_seeder = FibonacciSeeder(self.eval_seed)
         self.noise = dict(noise) if noise is not None else {"type": "constant", "value": 0.0}
         self.noise.setdefault("final", float(self.noise["value"]))
