@@ -92,7 +92,7 @@ def plot_output_folder_summary(output_folder: Path | str,
 
     ax.set_ylabel('Evaluation return')
     ax.set_title(title or f'Evaluation mean/std summary from {folder.name}')
-    ax.grid(True)
+    ax.grid(True,linewidth=2.5, alpha=0.3)
     ax.legend()
 
     fig.tight_layout()
@@ -176,17 +176,42 @@ def plot_csv_curves_from_folder(folder_path, output_file=None):
         upper = [r + s for r, s in zip(returns, stds)]
         label = os.path.splitext(file_name)[0]
 
-        ax.plot(iterations, returns, label=label)
-        ax.fill_between(iterations, lower, upper, alpha=0.2)
+        if "gradient2noise" in file_name:
+            linestyle = '-'
+        elif "constant" in file_name:
+            linestyle = '--'
 
-    ax.set_xlabel("iterations")
-    ax.set_ylabel("returns")
-    ax.set_title("Returns with std envelope")
-    ax.legend()
+        else:
+            linestyle = ':'
+
+        color_map = {
+
+                "constant0": "blue",
+
+                "constant1": "black",
+
+                "constant3": "red",
+                "gradient2noise": "Green",
+                "ppo": "orange",
+                "methoddrpo": "magenta",
+
+            }
+        color = "black"  # ברירת מחדל
+
+        for key, c in color_map.items():
+
+            if key in file_name:
+
+                color = c
+                break
+        ax.plot(iterations, returns, label=label, linestyle=linestyle, color=color)
+        ax.fill_between(iterations, lower, upper, alpha=0.08, color=color)
+    ax.set_xlabel("Iteration", fontsize=20)
+    ax.set_ylabel("Return", fontsize=20)
     ax.grid(True)
 
     if output_file is not None:
-        plt.savefig(output_file, bbox_inches="tight")
+        plt.savefig(output_file, bbox_inches="tight",dpi=800)
     else:
         plt.show()
 

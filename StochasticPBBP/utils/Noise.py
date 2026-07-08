@@ -472,9 +472,10 @@ class R2GradientAdditiveNoise(AdditiveNoise):
                 step_score=step_scores[step_index],
                 score_quantile=score_quantile,
             )
+            #print(sigma)
             profile[step_index][name] = torch.full_like(reference, fill_value=sigma)
 
-        return profile
+        return profile 
 
     def _sigma_from_step_score(self,
                                *,
@@ -596,7 +597,7 @@ class AdditiveNoiseFactory:
             r2_noise = R2GradientAdditiveNoise(
                 scale=1.0,
                 eps=1e-6,
-                min_std=1,
+                min_std=0.25 if end_std is None else end_std,
                 max_std=std,
                 alpha=alpha,# for linear 1.0
                 norm_scope='global',

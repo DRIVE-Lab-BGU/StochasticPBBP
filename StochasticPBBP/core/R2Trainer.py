@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from enum import Enum
+import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import torch
 from torch import nn
 
 from StochasticPBBP.core.Train import Train
@@ -91,6 +93,55 @@ class R2Trainer(Train):
 
     def _set_phase(self, phase: R2TrainingPhase) -> None:
         self.current_phase = phase
+
+    @staticmethod
+    def _profile_to_sigma_vector(
+        profile: Optional[Any],
+        *,
+        horizon: int,
+    ) -> List[float]:
+        sigmas: List[float] = []
+        if horizon < 0:
+            raise ValueError(f'horizon must be non-negative, got {horizon}.')
+        if not isinstance(profile, list):
+            return [float('nan')] * horizon
+
+        for step_index in range(horizon):
+            if step_index >= len(profile):
+                sigmas.append(float('nan'))
+                continue
+            step_profile = profile[step_index]
+            if not isinstance(step_profile, dict) or not step_profile:
+                sigmas.append(float('nan'))
+                continue
+
+            values: List[float] = []
+            for tensor in step_profile.values():
+                if not isinstance(tensor, torch.Tensor) or tensor.numel() == 0:
+                    continue
+                values.append(float(tensor.detach().to(dtype=torch.float64).mean().item()))
+
+            if not values:
+                sigmas.append(float('nan'))
+                continue
+            sigmas.append(float(sum(values) / len(values)))
+        return sigmas
+
+    @staticmethod
+    def _sigma_summary(sigmas: Sequence[float]) -> Dict[str, float]:
+        finite_values = [float(value) for value in sigmas if math.isfinite(value)]
+        if not finite_values:
+            nan_value = float('nan')
+            return {
+                'mean': nan_value,
+                'min': nan_value,
+                'max': nan_value,
+            }
+        return {
+            'mean': float(sum(finite_values) / len(finite_values)),
+            'min': float(min(finite_values)),
+            'max': float(max(finite_values)),
+        }
 
     def _run_update_phase(
         self,
@@ -227,7 +278,7 @@ class R2Trainer(Train):
                          batch: Optional[bool]=None,
                          additive_noise: Optional[AdditiveNoise]=None,
                          analysis_additive_noise: Optional[AdditiveNoise]=None
-                         ) -> Tuple[List[Dict[str, float]], nn.Module]:
+                         ) -> Tuple[List[Dict[str, Any]], nn.Module]:
         del batch # delete the batch from the scopeto avoid warning unused agument
         effective_batch_size = self.default_batch_size if batch_size is None else (
             self._resolve_batch_size(batch_size)
@@ -240,7 +291,7 @@ class R2Trainer(Train):
             batch_num=effective_batch_num,
         )
 
-        history: List[Dict[str, float]] = []
+        history: List[Dict[str, Any]] = []
         for iteration in range(1, iterations + 1):
             result = self.train_iteration(
                 iteration=iteration,
@@ -249,6 +300,11 @@ class R2Trainer(Train):
             )
             update_result = result['update']
             analysis_result = result['analysis']
+            sigma_profile = self._profile_to_sigma_vector(
+                result.get('profile'),
+                horizon=int(self.rollout.horizon),
+            )
+            sigma_summary = self._sigma_summary(sigma_profile)
             metrics = {
                 'iteration': float(iteration),
                 'update_return': float(update_result['objective'].detach()),
@@ -256,6 +312,10 @@ class R2Trainer(Train):
                 'update_steps': float(len(update_result['trace'].rewards)),
                 'analysis_return': float(analysis_result['objective'].detach()),
                 'analysis_steps': float(len(analysis_result['trace'].rewards)),
+                'sigma_profile': sigma_profile,
+                'sigma_mean': float(sigma_summary['mean']),
+                'sigma_min': float(sigma_summary['min']),
+                'sigma_max': float(sigma_summary['max']),
             }
             history.append(metrics)
 

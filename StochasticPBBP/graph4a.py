@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 from StochasticPBBP.core.Logic import ExactLogic
 from StochasticPBBP.core.Rollout import TorchRollout
 
-DOMAIN_PATH = PACKAGE_ROOT / "problems" / "powergen" / "domain.rddl"
+DOMAIN_PATH = PACKAGE_ROOT / "problems" / "powergen" / "domain_old.rddl"
 INSTANCE_PATH = PACKAGE_ROOT / "problems" / "powergen" / "instance_1.rddl"
 INSTANCE_NAME = "inst_power_gen_1c"
 PLANT_NAMES = ("p1", "p2")
@@ -79,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--deterministic",
         action="store_true",
-        default=False,
+        default=True,
         help=(
             "Assume the domain CPFs are deterministic and evaluate them with "
             "TorchRollout under the selected logic backend."
@@ -97,11 +97,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fuzzy-weight",
         type=float,
-        default=100.0,
+        default=1,
         help=(
             "Single weight shared by SigmoidComparison, SoftRounding, and "
             "SoftControlFlow whenever FuzzyLogic is used."
-        ),
+        )
     )
     parser.add_argument(
         "--output-dir",
@@ -358,6 +358,9 @@ def plot_csv(csv_path: Path, plot_output: Path | None = None, title: str | None 
 
     fig = plt.figure(figsize=(11, 8))
     axis = fig.add_subplot(111, projection="3d")
+    
+    axis.tick_params(axis='both', labelsize=13)
+    axis.tick_params(axis='z', labelsize=13)
 
     if complete_grid:
         x_mesh, y_mesh = np.meshgrid(unique_x, unique_y, indexing="xy")
@@ -389,11 +392,10 @@ def plot_csv(csv_path: Path, plot_output: Path | None = None, title: str | None 
             depthshade=True,
         )
 
-    axis.set_xlabel("action_p1")
-    axis.set_ylabel("action_p2")
-    axis.set_zlabel("cumulative_reward")
-    axis.set_title(title or csv_path.stem)
-    fig.colorbar(artist, ax=axis, shrink=0.65, pad=0.08, label="cumulative_reward")
+    #axis.set_xlabel("action_p1")
+    #axis.set_ylabel("action_p2")
+    #axis.set_zlabel("cumulative_reward")
+    fig.colorbar(artist, ax=axis, shrink=0.65, pad=0.08)
     fig.tight_layout()
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
