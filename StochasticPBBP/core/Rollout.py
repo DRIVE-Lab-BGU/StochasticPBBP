@@ -75,6 +75,15 @@ class TorchRolloutCell(nn.Module):
         compiled.compile(log_expr=False, heading='ROLLOUT MODEL')
 
         self.compiler = compiled
+# ======================================================================
+#                           For Nir
+# ======================================================================
+        # if nir:
+        #     self.step_fn = nir_dynamic
+        # else:
+        #     self.step_fn = compiled.compile_transition(cache_path_info=False)
+
+
         self.step_fn = compiled.compile_transition(cache_path_info=False)
         self.init_values = self._clone_structure(compiled.init_values)
         # parameters for logic
