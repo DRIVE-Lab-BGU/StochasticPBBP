@@ -2094,8 +2094,6 @@ class TorchRDDLCompiler:
                 torch_cpfs[cpf] = self._torch(expr, init_params, dtype=dtype)
         return torch_cpfs
 
-
-
     # ------------------------------------------------------------------
     # Utility helpers
     # ------------------------------------------------------------------
