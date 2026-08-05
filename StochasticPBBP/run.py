@@ -3,26 +3,38 @@ from __future__ import annotations
 from pathlib import Path
 import argparse
 import os
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from StochasticPBBP.manager import ExperimentManager
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--instance", type=int, default=4, help="instance number")
-parser.add_argument("--domain", type=str, default='race_car', help="domain name")
+parser.add_argument("--instance", type=int, default=1, help="instance number")
+parser.add_argument("--domain", type=str, default='reservoir', help="domain name")
 parser.add_argument("--seeds", type=int, default=1, help="number of seeds for training")
 parser.add_argument("--eval", type=int, default=1, help="number of averaging evaluations")
 parser.add_argument("--trainkey", type=int, default=112, help="start seed for the training seeds")
 parser.add_argument("--evalkey", type=int, default=42, help="start seed for the eval seeds")
-parser.add_argument("--horizon", type=int, default=120, help="number of steps in a rollout")
+parser.add_argument("--horizon", type=int, default=50, help="number of steps in a rollout")
 parser.add_argument("--lr", type=float, default=0.01, help="RMSProp learning rate")
-parser.add_argument("--iterations", type=int, default=3000, help="number of training iterations")
+parser.add_argument("--iterations", type=int, default=100, help="number of training iterations")
+parser.add_argument(
+    "--policy",
+    type=str,
+    choices=("neural", "to"),
+    default="neural",
+    help="policy type: neural state feedback or open-loop trajectory optimization",
+)
 parser.add_argument('--arch', nargs='+', type=int, default=(12, 12))
 parser.add_argument("--logfreq", type=int, default=10, help="log iteration frequency")
 parser.add_argument("--weight", type=float, default=100.0, help="t-norms approximation weight")
 parser.add_argument("--output", type=str, default="", help="the output directory, default is the output subfolder")
 parser.add_argument("--noisetype", type=str, default="constant", help="type of exploration noise (gradient2noise or constant)")
 parser.add_argument("--noisestd", type=float, default=0, help="initial std of noise")
-parser.add_argument("--noisestdend", type=float, default=0.25, help="final std of noise")
+parser.add_argument("--noisestdend", type=float, default=0, help="final std of noise")
 parser.add_argument("--alpha", type=float, default=0.1, help="alpha parameter for noise")
 parser.add_argument(
     "-e",
@@ -56,6 +68,7 @@ def main(args) -> None:
         exact_eval_mode=args.exact,
         output_folder=output_dir,
         arch=tuple(args.arch),
+        policy_type=args.policy,
     )
 
     iterations, returns, stds = manager.run_experiment(iterations=args.iterations, log_frequency=args.logfreq)

@@ -19,7 +19,7 @@ domain reservoir_control_cont {
 		MIN_LEVEL(reservoir): { non-fluent, real, default = 20.0 };  // The lower bound for desired reservoir level
 		RAIN_VAR(reservoir):  { non-fluent, real, default = 5.0 };  // Half normal variance parameter for rainfall
         RES_CONNECT(reservoir, reservoir): { non-fluent, bool, default = false }; // Indicates 2nd reservoir is forward connected to 1st reservoir
-        EVAPORATION_FACTOR: { non-fluent, real, default = 0.00 }; // Maximum fraction of evaporation
+        EVAPORATION_FACTOR: { non-fluent, real, default = 0.1 }; // Maximum fraction of evaporation
         CONNECTED_TO_SEA(reservoir): {non-fluent, bool, default = false}; // reservoirs connected to the sea
 
         LOW_COST(reservoir) : { non-fluent, real, default =  -5.0 }; // Penalty per unit of level < MIN_LEVEL

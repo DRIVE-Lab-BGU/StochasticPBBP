@@ -21,7 +21,7 @@ os.environ.setdefault(
 from StochasticPBBP.core.Train import Train
 from StochasticPBBP.core.R2Trainer import R2Trainer
 from StochasticPBBP.core.Rollout import TorchRollout
-from StochasticPBBP.utils.Policies import NeuralStateFeedbackPolicy, MBDPOPolicy
+from StochasticPBBP.utils.Policies import MBDPOPolicy, NeuralStateFeedbackPolicy, TO
 from StochasticPBBP.utils.helper import collapse_history_to_iterations
 from StochasticPBBP.utils.seeder import FibonacciSeeder
 from StochasticPBBP.utils.Noise import AdditiveNoiseFactory, NoiseInfo
@@ -43,10 +43,17 @@ class ExperimentManager:
                  learning_rate: float=0.01,
                  noise: Optional[NoiseInfo]=None,
                  exact_eval_mode=False,
-                 output_folder=None) -> None:
+                 output_folder=None,
+                 policy_type: str='neural') -> None:
         self.env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
         self.env.horizon = horizon
         self.horizon = horizon
+        normalized_policy_type = policy_type.strip().lower()
+        if normalized_policy_type not in {'neural', 'to'}:
+            raise ValueError(
+                f'policy_type must be "neural" or "to", got {policy_type!r}.'
+            )
+        self.policy_type = normalized_policy_type
         if arch is None:
             self.arch = (12,12)
             print("[INFO] No architecture specified, using default (12, 12)")
@@ -70,6 +77,7 @@ class ExperimentManager:
         self.eval_seeder = FibonacciSeeder(self.eval_seed)
         self.noise = dict(noise) if noise is not None else {"type": "constant", "value": 0.0}
         self.noise.setdefault("final", float(self.noise["value"]))
+        self.noise.setdefault("alpha", 0.1)
         torch.manual_seed(seed)
 
         self.template_rollout = TorchRollout(self.env.model, horizon=self.horizon)
@@ -462,14 +470,23 @@ class ExperimentManager:
             seed=self.seed,
         )
 
+    def _build_policy(self):
+        if self.policy_type == 'neural':
+            return NeuralStateFeedbackPolicy(
+                observation_template=self.observation_template,
+                action_template=self.template_rollout.noop_actions,
+                hidden_sizes=self.arch,
+                action_space=self.env.action_space,
+                seed=next(self.train_seeder),
+            )
+        if self.policy_type == 'to':
+            return TO(
+                action_template=self.template_rollout.noop_actions,
+                horizon=self.horizon,)
+        raise RuntimeError(f'Unsupported policy_type={self.policy_type!r}.')
+
     def _run_single_experiment(self, iterations: int=100, log_frequency: int=10) -> None:
-        policy = NeuralStateFeedbackPolicy(
-            observation_template=self.observation_template,
-            action_template=self.template_rollout.noop_actions,
-            hidden_sizes=self.arch,
-            action_space=self.env.action_space,
-            seed=next(self.train_seeder)
-        )
+        policy = self._build_policy()
         trainer = self._build_trainer(policy=policy, iterations=iterations)
         eval_returns = []
         eval_iterations = []

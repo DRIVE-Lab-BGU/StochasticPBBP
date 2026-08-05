@@ -112,6 +112,60 @@ trace = rollout(policy=noop_policy)
 print(float(trace.return_))
 ```
 
+## Direct-Action Trajectory Optimization
+
+`TO` is an open-loop policy whose trainable parameters are the action values
+for every timestep. The existing `Train` loop optimizes this sequence with
+RMSProp:
+
+```python
+from StochasticPBBP.core.Logic import FuzzyLogic
+from StochasticPBBP.core.Train import Train
+from StochasticPBBP.utils.Policies import TO
+
+horizon = 50
+template_rollout = TorchRollout(env.model, horizon=horizon)
+policy = TO(
+    action_template=template_rollout.noop_actions,
+    horizon=horizon,
+)
+trainer = Train(
+    model=env.model,
+    policy=policy,
+    horizon=horizon,
+    lr=0.01,
+    logic=FuzzyLogic(),
+    batch_size=horizon,
+    batch_num=1,
+    seed=42,
+)
+history, policy = trainer.train_trajectory(iterations=100)
+optimized_actions = policy.action_sequence()
+```
+
+The policy returns raw action parameters: it does not apply Gym bounds,
+sigmoid/softplus transforms, or projection. A compatible RDDL domain must clip
+actions in its CPFs when clipping is required. For example, the reservoir
+domain maps `release` to the effective `released_water` with
+`max[0, min[rlevel, release]]`. Action preconditions alone are only evaluated
+and logged by the current Torch transition; they do not clip or reject an
+action.
+
+Use `batch_size == horizon` and `batch_num == 1` for TO. These settings are
+validated by `Train`.
+
+The experiment CLI exposes the policy with:
+
+```bash
+python StochasticPBBP/run.py \
+  --policy to \
+  --domain reservoir \
+  --instance 1 \
+  --horizon 50 \
+  --iterations 100 \
+  --noisestd 0
+```
+
 ## Documentation
 
 This repository now includes a small Read the Docs / MkDocs documentation

@@ -63,13 +63,18 @@ class Train:
         self.batch_key.manual_seed(seed)
         self.simulator = simulator
         self.rollout.reset()
+
+        if policy is None:
+            raise ValueError('A policy must be provided.')
+        self.policy = policy
+
         self.default_additive_noise = self._resolve_additive_noise(additive_noise)
         self.default_batch_size = self._resolve_batch_size(batch_size)
         self.default_batch_num = self._validate_batch_num(batch_num)
-
-        if policy is None:
-                raise ValueError('A policy must be provided.')
-        self.policy = policy
+        self._validate_policy_batching(
+            batch_size=self.default_batch_size,
+            batch_num=self.default_batch_num,
+        )
         self.optimizer = torch.optim.RMSprop(self.policy.parameters(), lr=lr)
 
     def _resolve_batch_size(self, batch_size: Optional[int]) -> int:
@@ -100,6 +105,28 @@ class Train:
         if not isinstance(batch_num, int) or batch_num < 1:
             raise ValueError(f'batch_num must be a positive integer, got {batch_num!r}.')
         return batch_num
+
+    def _validate_policy_batching(self, *, batch_size: int, batch_num: int) -> None:
+        if not getattr(self.policy, 'requires_full_horizon', False):
+            return
+
+        horizon = int(self.rollout.horizon)
+        policy_horizon = getattr(self.policy, 'horizon', None)
+        if policy_horizon != horizon:
+            raise ValueError(
+                'Full-horizon policy length must match the rollout horizon: '
+                f'policy horizon={policy_horizon}, rollout horizon={horizon}.'
+            )
+        if batch_size != horizon:
+            raise ValueError(
+                'TO requires full-horizon updates: '
+                f'batch_size must equal horizon={horizon}, got {batch_size}.'
+            )
+        if batch_num != 1:
+            raise ValueError(
+                'TO supports exactly one optimizer update per iteration, '
+                f'got batch_num={batch_num}.'
+            )
 
     @staticmethod
     def _reduce_objective(objective: torch.Tensor) -> torch.Tensor:
@@ -233,6 +260,10 @@ class Train:
         )
         effective_batch_num = self.default_batch_num if batch_num is None else (
             self._validate_batch_num(batch_num)
+        )
+        self._validate_policy_batching(
+            batch_size=effective_batch_size,
+            batch_num=effective_batch_num,
         )
         effective_additive_noise = self.default_additive_noise if additive_noise is None else (
             self._resolve_additive_noise(additive_noise)

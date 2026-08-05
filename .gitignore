@@ -4,4 +4,5 @@ site
 .vscode
 .matplotlib
 StochasticPBBP/outputs/
-StochasticPBBP/tests/
+StochasticPBBP/tests/*
+!StochasticPBBP/tests/test_to_policy.py

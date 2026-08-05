@@ -76,7 +76,9 @@ class MBDPOPolicy(ABC):
             # restart episode
             total_reward, cuml_gamma = 0.0, 1.0
             self.reset()
-            if seed_generator is not None:
+            if seed_generator is None:
+                state, _ = env.reset()
+            else:
                 state, _ = env.reset(seed=next(seed_generator))
 
             # printing
@@ -91,7 +93,11 @@ class MBDPOPolicy(ABC):
                 # take a step in the environment
                 state = self._unpack_observation(state)
                 state = self._normalize_external_observation(state)
-                action = self.sample_action(observation=state, training_mode=False)
+                action = self.sample_action(
+                    observation=state,
+                    training_mode=False,
+                    step=step,
+                )
                 action = self._action_to_env_dict(action)
                 next_state, reward, terminated, truncated, _ = env.step(action)
                 total_reward += reward * cuml_gamma
@@ -354,6 +360,124 @@ class NeuralStateFeedbackPolicy(MBDPOPolicy, nn.Module):
     #         bounded_action = torch.where(upper_only, upper_bounded_action, bounded_action)
     #
     #     return bounded_action
+
+
+class TO(MBDPOPolicy, nn.Module):
+    """Open-loop trajectory optimization over a direct action sequence.
+
+    Each lifted action fluent owns one trainable tensor whose leading dimension
+    is the planning horizon. The policy deliberately returns those raw
+    parameters without applying action-space bounds or other transformations;
+    compatible RDDL domains must enforce any required clipping in their
+    dynamics.
+    """
+
+    requires_full_horizon = True
+
+    def __init__(self,
+                 action_template: TensorDict,
+                 horizon: int) -> None:
+        super().__init__()
+        if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 1:
+            raise ValueError(f'horizon must be a positive integer, got {horizon!r}.')
+        if not action_template:
+            raise ValueError('action_template must contain at least one tensor.')
+
+        self.horizon = horizon
+        # _cursor is used to track the current step in the rollout when sample_action is called without a step argument.
+        self._cursor = 0
+        self.action_specs: List[Dict[str, Any]] = []
+        parameters: List[nn.Parameter] = []
+
+        for (name, template) in action_template.items():
+            tensor = self._as_tensor(template)
+            # TO support onli for continous actions :)
+            if not tensor.dtype.is_floating_point:
+                raise ValueError(
+                    f'TO supports only floating-point actions, got {name} '
+                    f'with dtype {tensor.dtype}.'
+                )
+
+            shape = tuple(tensor.shape)
+            initial_sequence = (
+                tensor.detach()
+                .unsqueeze(0)
+                .expand((horizon,) + shape)
+                .clone())
+            expected_shape = (horizon,) + shape
+            if tuple(initial_sequence.shape) != expected_shape:
+                raise ValueError(
+                    f'Action sequence for {name!r} must have shape '
+                    f'{expected_shape}, got {tuple(initial_sequence.shape)}.'
+                )
+
+            self.action_specs.append({
+                'name': name,
+                'shape': shape,
+                'numel': int(tensor.numel()),
+                'dtype': tensor.dtype,
+                'device': tensor.device,
+            })
+            parameters.append(nn.Parameter(initial_sequence))
+
+        self.action_parameters = nn.ParameterList(parameters)
+        self.device = self.action_specs[0]['device']
+        self.dtype = self.action_specs[0]['dtype']
+
+    def _validate_step(self, step: int) -> None:
+        if isinstance(step, bool) or not isinstance(step, int):
+            raise TypeError(f'step must be an integer, got {step!r}.')
+        if step < 0 or step >= self.horizon:
+            raise IndexError(
+                f'step must be in [0, {self.horizon - 1}], got {step}.'
+            )
+
+    def forward(self,
+                observation: TensorDict,
+                step: int,
+                policy_state: Any=None) -> TensorDict:
+        del observation, policy_state
+        self._validate_step(step)
+        return {
+            spec['name']: parameter[step]
+            for (spec, parameter) in zip(
+                self.action_specs,
+                self.action_parameters,
+            )
+        }
+
+    def sample_action(self,
+                      observation: Any,
+                      training_mode: bool=True,
+                      step: Optional[int]=None,
+                      policy_state: Any=None) -> TensorDict:
+        use_cursor = step is None
+        selected_step = self._cursor if use_cursor else step
+
+        if training_mode:
+            action = self.forward(observation, selected_step, policy_state)
+        else:
+            with torch.no_grad():
+                action = self.forward(observation, selected_step, policy_state)
+
+        if use_cursor:
+            self._cursor += 1
+        return action
+
+    def reset(self) -> None:
+        self._cursor = 0
+
+    def action_sequence(self, detach: bool=True) -> List[TensorDict]:
+        sequence: List[TensorDict] = []
+        for step in range(self.horizon):
+            action = self.forward({}, step, policy_state=None)
+            if detach:
+                action = {
+                    name: value.detach().clone()
+                    for (name, value) in action.items()
+                }
+            sequence.append(action)
+        return sequence
 
 
 

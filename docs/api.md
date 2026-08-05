@@ -212,6 +212,51 @@ The training code is now split across three files:
 - `StochasticPBBP/core/Train.py`: horizon batch sampling training loop
 - `StochasticPBBP/Runs.py`: runnable CLI entrypoint
 
+### `TO`
+
+`StochasticPBBP.utils.Policies.TO` represents a direct, open-loop action
+sequence:
+
+```python
+TO(
+    action_template,
+    horizon,
+)
+```
+
+For each lifted action fluent, it registers one `nn.Parameter` with shape
+`(horizon, *action_shape)`. The no-op action template is repeated across the
+horizon to initialize the sequence. `forward(observation, step, policy_state)`
+ignores the observation and returns the raw parameter row at `step`.
+
+`TO` intentionally performs no action-space transformation or clipping.
+Domains used with it must enforce any required clipping in their CPFs. RDDL
+action preconditions are reported in the transition log but are not enforced
+by `TorchRollout`.
+
+TO must be optimized with one full-horizon update:
+
+```python
+policy = TO(
+    action_template=template_rollout.noop_actions,
+    horizon=horizon,
+)
+trainer = Train(
+    model=env.model,
+    policy=policy,
+    horizon=horizon,
+    lr=0.01,
+    batch_size=horizon,
+    batch_num=1,
+)
+history, policy = trainer.train_trajectory(iterations=100)
+actions = policy.action_sequence()
+```
+
+`Train` uses `torch.optim.RMSprop` over `policy.parameters()`. It rejects
+partial or repeated batches for policies such as TO that declare
+`requires_full_horizon = True`.
+
 ### `GaussianPolicy`
 
 `GaussianPolicy` is a state-independent diagonal Gaussian over the lifted action
