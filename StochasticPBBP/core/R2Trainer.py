@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from enum import Enum
 import math
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import torch
 from torch import nn
 
 from StochasticPBBP.core.Train import Train
 from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
+
+
+AnalysisActionCallback = Callable[[int, Sequence[Dict[str, Any]]], None]
 
 
 class R2TrainingPhase(str, Enum):
@@ -226,6 +229,7 @@ class R2Trainer(Train):
         iteration: int,
         additive_noise: Optional[AdditiveNoise]=None,
         analysis_additive_noise: Optional[AdditiveNoise]=None,
+        analysis_action_callback: Optional[AnalysisActionCallback]=None,
     ) -> Dict[str, Any]:
         effective_additive_noise = self.default_additive_noise if additive_noise is None else (
             self._resolve_additive_noise(additive_noise)
@@ -255,6 +259,12 @@ class R2Trainer(Train):
             additive_noise=effective_analysis_noise,
         )
 
+        if analysis_action_callback is not None:
+            analysis_action_callback(
+                iteration,
+                analysis_result['trace'].actions,
+            )
+
         # take thr analysis_result and update the noise profile for the next iteration.
         self.r2_profile = self.refresh_noise_profile(
             iteration=iteration,
@@ -277,7 +287,8 @@ class R2Trainer(Train):
                          batch_num: Optional[int]=None,
                          batch: Optional[bool]=None,
                          additive_noise: Optional[AdditiveNoise]=None,
-                         analysis_additive_noise: Optional[AdditiveNoise]=None
+                         analysis_additive_noise: Optional[AdditiveNoise]=None,
+                         analysis_action_callback: Optional[AnalysisActionCallback]=None,
                          ) -> Tuple[List[Dict[str, Any]], nn.Module]:
         del batch # delete the batch from the scopeto avoid warning unused agument
         effective_batch_size = self.default_batch_size if batch_size is None else (
@@ -297,6 +308,7 @@ class R2Trainer(Train):
                 iteration=iteration,
                 additive_noise=additive_noise,
                 analysis_additive_noise=analysis_additive_noise,
+                analysis_action_callback=analysis_action_callback,
             )
             update_result = result['update']
             analysis_result = result['analysis']
@@ -338,7 +350,8 @@ class R2Trainer(Train):
                     print_every: int=1,
                     batch_num: int=1,
                     additive_noise: Optional[AdditiveNoise]=None,
-                    analysis_additive_noise: Optional[AdditiveNoise]=None
+                    analysis_additive_noise: Optional[AdditiveNoise]=None,
+                    analysis_action_callback: Optional[AnalysisActionCallback]=None,
                     ) -> Tuple[List[Dict[str, float]], nn.Module]:
         return self.train_trajectory(
             iterations=iterations,
@@ -347,4 +360,5 @@ class R2Trainer(Train):
             batch_num=batch_num,
             additive_noise=additive_noise,
             analysis_additive_noise=analysis_additive_noise,
+            analysis_action_callback=analysis_action_callback,
         )

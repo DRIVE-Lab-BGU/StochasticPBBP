@@ -65,6 +65,6 @@ instance inst_power_gen_4c {
 		temperature = 21.54313218005406;
 	};
 	max-nondef-actions = pos-inf;
-	horizon = 100;
+	horizon = 120;
 	discount = 1.0;
 }

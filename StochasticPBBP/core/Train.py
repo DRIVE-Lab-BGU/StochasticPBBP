@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import torch
 from torch import nn
@@ -10,6 +10,8 @@ from StochasticPBBP.core.Logic import ExactLogic, FuzzyLogic
 from StochasticPBBP.core.Rollout import TorchRollout
 from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
 from StochasticPBBP.utils.Policies import StationaryMarkov
+
+UpdateActionCallback = Callable[[int, Sequence[Dict[str, Any]]], None]
 
 # from .Logic import FuzzyLogic
 # from .Policies import GaussianPolicy
@@ -238,7 +240,8 @@ class Train:
                          batch_size: Optional[int]=None,
                          batch_num: Optional[int]=None,
                          batch: Optional[bool]=None,
-                         additive_noise: Optional[AdditiveNoise]=None
+                         additive_noise: Optional[AdditiveNoise]=None,
+                         update_action_callback: Optional[UpdateActionCallback]=None,
                          ) -> Tuple[List[Dict[str, float]], nn.Module]:
         """Train the policy with sampled horizon batches.
 
@@ -252,6 +255,9 @@ class Train:
             batch: Legacy compatibility argument; ignored.
             additive_noise: Action-noise object applied during rollout. Defaults
                 to `NoAdditiveNoise` via the factory.
+            update_action_callback: Optional observer called once per outer
+                iteration with the existing noisy update trace actions. This
+                requires one full-horizon optimizer batch per iteration.
         """
         del batch
         history: List[Dict[str, float]] = []
@@ -265,6 +271,15 @@ class Train:
             batch_size=effective_batch_size,
             batch_num=effective_batch_num,
         )
+        if update_action_callback is not None:
+            horizon = int(self.rollout.horizon)
+            if effective_batch_size != horizon or effective_batch_num != 1:
+                raise ValueError(
+                    'update_action_callback requires one full-horizon update: '
+                    f'batch_size must equal horizon={horizon} and batch_num must '
+                    f'equal 1, got batch_size={effective_batch_size} and '
+                    f'batch_num={effective_batch_num}.'
+                )
         effective_additive_noise = self.default_additive_noise if additive_noise is None else (
             self._resolve_additive_noise(additive_noise)
         )
@@ -273,6 +288,7 @@ class Train:
         self.policy.train()
 
         for iteration in range(1, iterations + 1):
+            iteration_trace = None
             sampled_indices = self._sample_partition_indices(
                 num_partitions=len(partitions),
                 batch_num=effective_batch_num,
@@ -298,6 +314,7 @@ class Train:
                     additive_noise=effective_additive_noise,
                 )
                 trace = result['trace']
+                iteration_trace = trace
 
                 end_step = start_step + len(trace.rewards)
                 display_step_start = start_step + 1 if len(trace.rewards) > 0 else start_step
@@ -336,6 +353,13 @@ class Train:
                         f"steps={int(metrics['steps'])}"
                     )
 
+            if update_action_callback is not None:
+                if iteration_trace is None:
+                    raise RuntimeError(
+                        'No update trace was produced for the current iteration.'
+                    )
+                update_action_callback(iteration, iteration_trace.actions)
+
         return history, self.policy
 
     def train_batch(self,
@@ -343,7 +367,8 @@ class Train:
                     iterations: int=10,
                     print_every: int=1,
                     batch_num: int=1,
-                    additive_noise: Optional[AdditiveNoise]=None
+                    additive_noise: Optional[AdditiveNoise]=None,
+                    update_action_callback: Optional[UpdateActionCallback]=None,
                     ) -> Tuple[List[Dict[str, float]], nn.Module]:
         return self.train_trajectory(
             iterations=iterations,
@@ -351,5 +376,6 @@ class Train:
             batch_size=batch_size,
             batch_num=batch_num,
             additive_noise=additive_noise,
+            update_action_callback=update_action_callback,
         )
     

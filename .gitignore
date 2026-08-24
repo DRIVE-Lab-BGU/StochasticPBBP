@@ -6,3 +6,4 @@ site
 StochasticPBBP/outputs/
 StochasticPBBP/tests/*
 !StochasticPBBP/tests/test_to_policy.py
+!StochasticPBBP/tests/test_action_tables.py

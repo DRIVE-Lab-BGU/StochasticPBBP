@@ -62,6 +62,6 @@ instance inst_hvac_4c {
 		temp-heater(h8) = 3.7158439855174716;
 	};
 	max-nondef-actions = pos-inf;
-	horizon = 100;
+	horizon = 120;
 	discount = 1.0;
 }

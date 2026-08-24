@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
+from pathlib import Path
+import re
 import sys
 import tempfile
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TypedDict
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, TypedDict
 import time
 import numpy as np
 
@@ -29,6 +32,74 @@ from StochasticPBBP.core.Logic import FuzzyLogic, SoftRounding, ProductTNorm, Si
 from StochasticPBBP.utils.logger import CSVLogger
 
 
+class ActionTableCSVWriter:
+    """Stream one action trajectory per training iteration and CSV row."""
+
+    def __init__(self, csv_path: Path | str, *, horizon: int) -> None:
+        if not isinstance(horizon, int) or horizon < 1:
+            raise ValueError(f'horizon must be a positive integer, got {horizon!r}.')
+
+        self.csv_path = Path(csv_path)
+        self.horizon = horizon
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self.csv_path.open('w', newline='', encoding='utf-8')
+        self._writer = csv.writer(self._handle)
+        self._writer.writerow(
+            ['iteration', *[f'timestep_{step}' for step in range(1, horizon + 1)]]
+        )
+        self._handle.flush()
+
+    @classmethod
+    def _to_json_value(cls, value: Any) -> Any:
+        if isinstance(value, torch.Tensor):
+            tensor = value.detach().cpu()
+            return tensor.item() if tensor.ndim == 0 else tensor.tolist()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, Mapping):
+            return {str(key): cls._to_json_value(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._to_json_value(item) for item in value]
+        return value
+
+    @classmethod
+    def _serialize_actions(cls, actions: Mapping[str, Any]) -> str:
+        json_value = cls._to_json_value(actions)
+        return json.dumps(
+            json_value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(',', ':'),
+        )
+
+    def write_iteration(
+        self,
+        iteration: int,
+        actions_by_timestep: Sequence[Mapping[str, Any]],
+    ) -> None:
+        if not isinstance(iteration, int) or iteration < 1:
+            raise ValueError(f'iteration must be a positive integer, got {iteration!r}.')
+        if len(actions_by_timestep) > self.horizon:
+            raise ValueError(
+                'Action trajectory cannot be longer than the configured horizon: '
+                f'got {len(actions_by_timestep)} actions for horizon={self.horizon}.'
+            )
+
+        action_cells = [
+            self._serialize_actions(actions)
+            for actions in actions_by_timestep
+        ]
+        action_cells.extend(['null'] * (self.horizon - len(action_cells)))
+        self._writer.writerow([iteration, *action_cells])
+        self._handle.flush()
+
+    def close(self) -> None:
+        if not self._handle.closed:
+            self._handle.close()
+
+
 
 class ExperimentManager:
     def __init__(self,domain: str,
@@ -44,7 +115,10 @@ class ExperimentManager:
                  noise: Optional[NoiseInfo]=None,
                  exact_eval_mode=False,
                  output_folder=None,
-                 policy_type: str='neural') -> None:
+                 policy_type: str='neural',
+                 save_actions_table: bool=False,
+                 domain_name: Optional[str]=None,
+                 instance_number: Optional[int]=None) -> None:
         self.env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
         self.env.horizon = horizon
         self.horizon = horizon
@@ -68,6 +142,23 @@ class ExperimentManager:
         self.logger = None
         self.output_folder = output_folder
         self.last_sigma_artifacts: Optional[Dict[str, Any]] = None
+        self.action_table_paths: List[str] = []
+        self.current_policy_seed: Optional[int] = None
+        self.save_actions_table = bool(save_actions_table)
+        self.domain_name = (
+            str(domain_name)
+            if domain_name is not None else
+            Path(domain).parent.name
+        )
+        if instance_number is None:
+            instance_match = re.search(r'instance_(\d+)', Path(instance).stem)
+            self.instance_number: Any = (
+                int(instance_match.group(1))
+                if instance_match is not None else
+                Path(instance).stem
+            )
+        else:
+            self.instance_number = int(instance_number)
 
         # i dont wnat. different seeds for each run i want to be able to reproduce 
         # the same results with the same seed.
@@ -78,6 +169,11 @@ class ExperimentManager:
         self.noise = dict(noise) if noise is not None else {"type": "constant", "value": 0.0}
         self.noise.setdefault("final", float(self.noise["value"]))
         self.noise.setdefault("alpha", 0.1)
+        self._validate_action_table_configuration(
+            save_actions_table=self.save_actions_table,
+            noise_type=str(self.noise['type']),
+            output_folder=self.output_folder,
+        )
         torch.manual_seed(seed)
 
         self.template_rollout = TorchRollout(self.env.model, horizon=self.horizon)
@@ -95,8 +191,61 @@ class ExperimentManager:
             )
         )
 
+    @staticmethod
+    def _validate_action_table_configuration(
+        *,
+        save_actions_table: bool,
+        noise_type: str,
+        output_folder: Optional[Path | str],
+    ) -> None:
+        if not save_actions_table:
+            return
+        normalized_noise_type = noise_type.strip().lower()
+        if normalized_noise_type not in {'gradient2noise', 'constant'}:
+            raise ValueError(
+                '--save-actions-table supports --noisetype gradient2noise '
+                f'or constant, got {noise_type!r}.'
+            )
+        if output_folder is None:
+            raise ValueError(
+                'output_folder must be provided when save_actions_table is enabled.'
+            )
+
+    @staticmethod
+    def _filename_token(value: Any) -> str:
+        token = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value).strip())
+        return token.strip('._-') or 'unknown'
+
+    def _action_table_path(self, *, policy_seed: int, iterations: int) -> Path:
+        if self.output_folder is None:
+            raise ValueError('output_folder is required to save an action table.')
+
+        domain_token = self._filename_token(self.domain_name)
+        instance_token = self._filename_token(self.instance_number)
+        noise_type_token = self._filename_token(
+            str(self.noise['type']).strip().lower()
+        )
+        std_token = self._filename_token(float(self.noise['value']))
+        filename_prefix = (
+            f'actions_table_{domain_token}_instance{instance_token}'
+            f'_policyseed{int(policy_seed)}_h{self.horizon}_i{int(iterations)}'
+        )
+        if noise_type_token == 'gradient2noise':
+            alpha_token = self._filename_token(float(self.noise['alpha']))
+            filename = (
+                f'{filename_prefix}_gradient2noise_std{std_token}'
+                f'_alpha{alpha_token}.csv'
+            )
+        else:
+            filename = (
+                f'{filename_prefix}_{noise_type_token}_std{std_token}'
+                '_noisy-update.csv'
+            )
+        return Path(self.output_folder) / 'actions_table' / filename
+
     def run_experiment(self, iterations: int=100, log_frequency: int=10) -> None:
         # iterations_axis: List[int] = []
+        self.action_table_paths = []
         all_returns: List[List[float]] = []
         all_eval_returns: List[List[float]] = []
         all_sigma_matrices: List[np.ndarray] = []
@@ -471,13 +620,15 @@ class ExperimentManager:
         )
 
     def _build_policy(self):
+        policy_seed = next(self.train_seeder)
+        self.current_policy_seed = policy_seed
         if self.policy_type == 'neural':
             return NeuralStateFeedbackPolicy(
                 observation_template=self.observation_template,
                 action_template=self.template_rollout.noop_actions,
                 hidden_sizes=self.arch,
                 action_space=self.env.action_space,
-                seed=next(self.train_seeder),
+                seed=policy_seed,
             )
         if self.policy_type == 'to':
             return TO(
@@ -510,38 +661,94 @@ class ExperimentManager:
 
         all_train_iterations.append(0)
 
+        action_table_writer: Optional[ActionTableCSVWriter] = None
+        if self.save_actions_table:
+            if self.current_policy_seed is None:
+                raise RuntimeError('Policy seed was not recorded while building the policy.')
+            action_table_path = self._action_table_path(
+                policy_seed=self.current_policy_seed,
+                iterations=iterations,
+            )
+            action_table_writer = ActionTableCSVWriter(
+                action_table_path,
+                horizon=self.horizon,
+            )
+            self.action_table_paths.append(str(action_table_path))
+            print(
+                '[INFO] Streaming iteration action trajectories to '
+                f'{action_table_path}'
+            )
+
         # execute training with evaluation on pyrddlgym
-        for i in range(chunks):
-            to_run = min(to_go, log_frequency)
-            history, trained_policy = trainer.train_trajectory(
-                iterations=to_run,
-                print_every=0,
-                batch_size=self.horizon,  # why again?
-            )
-            to_go = to_go - log_frequency
-            sigma_rows.extend(
-                self._history_to_sigma_rows(
-                    history,
-                    iteration_offset=all_train_iterations[-1],
+        try:
+            for i in range(chunks):
+                to_run = min(to_go, log_frequency)
+                iteration_offset = all_train_iterations[-1]
+                if action_table_writer is None:
+                    history, trained_policy = trainer.train_trajectory(
+                        iterations=to_run,
+                        print_every=0,
+                        batch_size=self.horizon,  # why again?
+                    )
+                else:
+                    def write_actions(
+                        local_iteration: int,
+                        actions: Sequence[Mapping[str, Any]],
+                        *,
+                        _iteration_offset: int=iteration_offset,
+                    ) -> None:
+                        action_table_writer.write_iteration(
+                            _iteration_offset + local_iteration,
+                            actions,
+                        )
+
+                    normalized_noise_type = str(self.noise['type']).strip().lower()
+                    if normalized_noise_type == 'gradient2noise':
+                        history, trained_policy = trainer.train_trajectory(
+                            iterations=to_run,
+                            print_every=0,
+                            batch_size=self.horizon,  # why again?
+                            analysis_action_callback=write_actions,
+                        )
+                    elif normalized_noise_type == 'constant':
+                        history, trained_policy = trainer.train_trajectory(
+                            iterations=to_run,
+                            print_every=0,
+                            batch_size=self.horizon,  # why again?
+                            update_action_callback=write_actions,
+                        )
+                    else:
+                        raise RuntimeError(
+                            'Unsupported noise type for action-table logging: '
+                            f'{self.noise["type"]!r}.'
+                        )
+                to_go = to_go - log_frequency
+                sigma_rows.extend(
+                    self._history_to_sigma_rows(
+                        history,
+                        iteration_offset=iteration_offset,
+                    )
                 )
-            )
-            train_iterations, train_returns = self._history_to_iterations(history)
+                train_iterations, train_returns = self._history_to_iterations(history)
 
-            # evaluate policy
-            if self.exact_eval_mode:
-                self.eval_seeder.reset()
-                result = policy.evaluate(self.env, episodes=self.eval_seeds, seed_generator=self.eval_seeder)
-                eval_returns.append(result['mean'])
+                # evaluate policy
+                if self.exact_eval_mode:
+                    self.eval_seeder.reset()
+                    result = policy.evaluate(self.env, episodes=self.eval_seeds, seed_generator=self.eval_seeder)
+                    eval_returns.append(result['mean'])
 
-                print_iter = print_iter + to_run
-                eval_iterations.append(print_iter)
-                print('[INFO] iter={:4d}, steps={:3d}, discounted return={:.2f}, std={:.2f}'.format(print_iter, self.horizon, result['mean'], result['std']))
-            else:
-                print('[INFO] iter={:4d}, steps={:3d}, discounted return={:.2f}'.format(all_train_iterations[-1]+train_iterations[-1], self.horizon,
-                                                                                      train_returns[0]))
+                    print_iter = print_iter + to_run
+                    eval_iterations.append(print_iter)
+                    print('[INFO] iter={:4d}, steps={:3d}, discounted return={:.2f}, std={:.2f}'.format(print_iter, self.horizon, result['mean'], result['std']))
+                else:
+                    print('[INFO] iter={:4d}, steps={:3d}, discounted return={:.2f}'.format(iteration_offset+train_iterations[-1], self.horizon,
+                                                                                          train_returns[0]))
 
-            all_train_returns.extend(train_returns)
-            all_train_iterations.extend(list(map(lambda x: x + all_train_iterations[-1], train_iterations)))
+                all_train_returns.extend(train_returns)
+                all_train_iterations.extend(list(map(lambda x: x + iteration_offset, train_iterations)))
+        finally:
+            if action_table_writer is not None:
+                action_table_writer.close()
         sigma_matrix = None
         if sigma_rows:
             sigma_rows.sort(key=lambda row: row[0])
