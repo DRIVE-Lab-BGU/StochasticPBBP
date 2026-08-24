@@ -382,7 +382,7 @@ class TO(MBDPOPolicy, nn.Module):
             raise ValueError(f'horizon must be a positive integer, got {horizon!r}.')
         if not action_template:
             raise ValueError('action_template must contain at least one tensor.')
-
+  
         self.horizon = horizon
         # _cursor is used to track the current step in the rollout when sample_action is called without a step argument.
         self._cursor = 0
