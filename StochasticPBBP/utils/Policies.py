@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import shutil
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from abc import ABC, abstractmethod
 import numpy as np
 
@@ -13,7 +13,10 @@ from torch.nn import functional as F
 from pyRDDLGym.core.env import RDDLEnv
 from StochasticPBBP.deprecated.Simulator import TorchRDDLSimulator
 from StochasticPBBP.utils.seeder import BaseSeeder
+from StochasticPBBP.utils.Noise import AdditiveNoise, NoAdditiveNoise
 
+if TYPE_CHECKING:
+    from StochasticPBBP.core.Train import Train
 TensorDict = Dict[str, torch.Tensor]
 
 
@@ -479,7 +482,75 @@ class TO(MBDPOPolicy, nn.Module):
             sequence.append(action)
         return sequence
 
+class MPC(MBDPOPolicy):
+    """Model Predictive Control wrapper around a TO planner."""
 
+    def __init__(
+        self,
+        planner: TO,
+        trainer: Train,
+        planning_steps: int,
+        optimization_iterations: int,
+        additive_noise: AdditiveNoise,) -> None:
+        super().__init__()
+        if not isinstance(planner, TO):
+            raise TypeError(f'planner must be a TO policy, got {type(planner).__name__}.')
+
+        if trainer.policy is not planner:
+            raise ValueError('trainer.policy must be the same TO instance as planner.')
+
+        if isinstance(planning_steps, bool) or not isinstance(planning_steps, int) or planning_steps < 1:
+            raise ValueError(f'planning_steps must be a positive integer, got {planning_steps!r}.')
+
+        if planning_steps > planner.horizon:
+            raise ValueError(f'planning_steps ({planning_steps}) cannot exceed 'f'planner horizon ({planner.horizon}).')
+
+        if (
+        isinstance(optimization_iterations, bool)
+        or not isinstance(optimization_iterations, int)
+        or optimization_iterations < 1):
+            raise ValueError('optimization_iterations must be a positive integer, 'f'got {optimization_iterations!r}.')
+
+        self.planner = planner
+        self.trainer = trainer
+        self.planning_steps = planning_steps
+        self.optimization_iterations = optimization_iterations
+        self.additive_noise = additive_noise
+
+    def sample_action(
+        self,
+        observation: Any,
+        training_mode: bool = False,
+        step: Optional[int] = None,
+        policy_state: Any = None,
+        ) -> TensorDict:
+
+        del training_mode, step, policy_state
+
+        self.trainer.optimize_from_state(
+        initial_state=observation,
+        iterations=self.optimization_iterations,
+        planning_steps=self.planning_steps,
+        additive_noise=self.additive_noise,
+        )
+
+        action = self.planner.sample_action(
+        observation=observation,
+        training_mode=False,
+        step=0,
+        )
+
+        action = {
+        name: value.detach().clone()
+        if isinstance(value, torch.Tensor)
+        else value
+        for name, value in action.items()
+        }
+
+        return action
+    
+    def reset(self) -> None:
+        self.planner.reset()
 
 class random_policy_old:
     def __init__(self, model, logic, noise=None):

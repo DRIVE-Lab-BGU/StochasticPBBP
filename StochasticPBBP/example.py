@@ -10,7 +10,7 @@ from StochasticPBBP.manager import ExperimentManager
 import matplotlib.pyplot as plt
 
 import torch
-from core.Train import Train
+from StochasticPBBP.core.Train import Train
 from StochasticPBBP.core.Rollout import TorchRollout
 from StochasticPBBP.utils.Policies import NeuralStateFeedbackPolicy
 from StochasticPBBP.utils.helper import collapse_history_to_iterations

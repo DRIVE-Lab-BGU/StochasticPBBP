@@ -12,9 +12,9 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from core.Logic import ExactLogic  # noqa: E402
-from core.Rollout import TorchRollout, TorchRolloutCell  # noqa: E402
-from utils.Noise import (  # noqa: E402
+from StochasticPBBP.core.Logic import ExactLogic  # noqa: E402
+from StochasticPBBP.core.Rollout import TorchRollout, TorchRolloutCell  # noqa: E402
+from StochasticPBBP.utils.Noise import (  # noqa: E402
     ConstantAdditiveNoise,
     JacobianBasedAdditiveNoise,
     LinearDecayAdditiveNoise,

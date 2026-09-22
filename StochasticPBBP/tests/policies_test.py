@@ -11,10 +11,10 @@ print(f"####################PACKAGE_ROOT={PACKAGE_ROOT}")
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from utils.Policies import random_policy
-from core.Compiler import TorchRDDLCompiler
-from core.Logic import ExactLogic
-from core.Initializer import RDDLValueInitializer
+from StochasticPBBP.utils.Policies import random_policy
+from StochasticPBBP.core.Compiler import TorchRDDLCompiler
+from StochasticPBBP.core.Logic import ExactLogic
+from StochasticPBBP.core.Initializer import RDDLValueInitializer
 
 
 def main():

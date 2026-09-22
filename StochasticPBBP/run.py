@@ -12,22 +12,19 @@ if str(PROJECT_ROOT) not in sys.path:
 from StochasticPBBP.manager import ExperimentManager
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--instance", type=int, default=1, help="instance number")
+parser.add_argument("--instance", type=int, default=3, help="instance number")
 parser.add_argument("--domain", type=str, default='reservoir', help="domain name")
 parser.add_argument("--seeds", type=int, default=1, help="number of seeds for training")
 parser.add_argument("--eval", type=int, default=1, help="number of averaging evaluations")
 parser.add_argument("--trainkey", type=int, default=112, help="start seed for the training seeds")
 parser.add_argument("--evalkey", type=int, default=42, help="start seed for the eval seeds")
-parser.add_argument("--horizon", type=int, default=50, help="number of steps in a rollout")
+parser.add_argument("--horizon", type=int, default=120, help="number of steps in a rollout")
 parser.add_argument("--lr", type=float, default=0.01, help="RMSProp learning rate")
-parser.add_argument("--iterations", type=int, default=100, help="number of training iterations")
-parser.add_argument(
-    "--policy",
-    type=str,
-    choices=("neural", "to"),
-    default="neural",
-    help="policy type: neural state feedback or open-loop trajectory optimization",
-)
+parser.add_argument("--iterations", type=int, default=3, help="number of training iterations")
+parser.add_argument("--policy", type=str, choices=("neural", "to", "mpc"), default="mpc",
+help="policy type: neural state feedback, open-loop trajectory optimization, or model predictive control",)
+parser.add_argument("--planning-steps", type=int, default=30, help="MPC planning horizon",)
+parser.add_argument("--optimization-iterations", type=int, default=10, help="number of trajectory-optimization iterations at each MPC step",)
 parser.add_argument('--arch', nargs='+', type=int, default=(12, 12))
 parser.add_argument("--logfreq", type=int, default=10, help="log iteration frequency")
 parser.add_argument("--weight", type=float, default=100.0, help="t-norms approximation weight")
@@ -35,14 +32,8 @@ parser.add_argument("--output", type=str, default="", help="the output directory
 parser.add_argument("--noisetype", type=str, default="constant", help="type of exploration noise (gradient2noise or constant)")
 parser.add_argument("--noisestd", type=float, default=0, help="initial std of noise")
 parser.add_argument("--noisestdend", type=float, default=0, help="final std of noise")
-parser.add_argument("--alpha", type=float, default=0.1, help="alpha parameter for noise")
-parser.add_argument(
-    "-e",
-    "--exact",
-    default=True,
-    action="store_true",
-    help="Exact evaluation mode - evaluate on a separate pyRDDLGym instance",
-)
+parser.add_argument("--alpha", type=float, default=0.0, help="alpha parameter for noise")
+parser.add_argument("-e", "--exact", default=True, action="store_true", help="Exact evaluation mode - evaluate on a separate pyRDDLGym instance",)
 args = parser.parse_args()
 PACKAGE_ROOT = Path(__file__).resolve().parent
 
@@ -69,6 +60,8 @@ def main(args) -> None:
         output_folder=output_dir,
         arch=tuple(args.arch),
         policy_type=args.policy,
+        planning_steps=args.planning_steps,
+        optimization_iterations=args.optimization_iterations,
     )
 
     iterations, returns, stds = manager.run_experiment(iterations=args.iterations, log_frequency=args.logfreq)

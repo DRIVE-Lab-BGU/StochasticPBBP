@@ -17,11 +17,11 @@ print(f"PACKAGE_ROOT={PACKAGE_ROOT}")
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from core.Rollout import TorchRollout
-from core.Train import Train
-from core.Logic import FuzzyLogic
-from utils.Noise import AdditiveNoiseFactory, AdditiveNoise
-from utils.Policies import TensorDict, StationaryMarkov
+from StochasticPBBP.core.Rollout import TorchRollout
+from StochasticPBBP.core.Train import Train
+from StochasticPBBP.core.Logic import FuzzyLogic
+from StochasticPBBP.utils.Noise import AdditiveNoiseFactory, AdditiveNoise
+from StochasticPBBP.utils.Policies import TensorDict, StationaryMarkov
 
 
 def main() -> None:

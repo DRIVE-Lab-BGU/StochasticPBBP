@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+from email import policy
 import os
 import sys
 import tempfile
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TypedDict
 import time
+from unittest import result
 import numpy as np
 
 import pyRDDLGym
@@ -21,7 +23,7 @@ os.environ.setdefault(
 from StochasticPBBP.core.Train import Train
 from StochasticPBBP.core.R2Trainer import R2Trainer
 from StochasticPBBP.core.Rollout import TorchRollout
-from StochasticPBBP.utils.Policies import MBDPOPolicy, NeuralStateFeedbackPolicy, TO
+from StochasticPBBP.utils.Policies import MBDPOPolicy, MPC, NeuralStateFeedbackPolicy, TO
 from StochasticPBBP.utils.helper import collapse_history_to_iterations
 from StochasticPBBP.utils.seeder import FibonacciSeeder
 from StochasticPBBP.utils.Noise import AdditiveNoiseFactory, NoiseInfo
@@ -44,22 +46,40 @@ class ExperimentManager:
                  noise: Optional[NoiseInfo]=None,
                  exact_eval_mode=False,
                  output_folder=None,
+                 planning_steps: Optional[int] = None,
+                 optimization_iterations: int = None,
                  policy_type: str='neural') -> None:
         self.env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
         self.env.horizon = horizon
         self.horizon = horizon
         normalized_policy_type = policy_type.strip().lower()
-        if normalized_policy_type not in {'neural', 'to'}:
-            raise ValueError(
-                f'policy_type must be "neural" or "to", got {policy_type!r}.'
-            )
+
+        if normalized_policy_type not in {'neural', 'to', 'mpc'}:
+            raise ValueError(f'policy_type must be "neural", "to", or "mpc", got {policy_type!r}.')
+
         self.policy_type = normalized_policy_type
-        if arch is None:
-            self.arch = (12,12)
-            print("[INFO] No architecture specified, using default (12, 12)")
-        else:
-            self.arch = arch
+
+        self.planning_steps = (self.horizon
+        if planning_steps is None
+        else planning_steps)
+
+        self.optimization_iterations = optimization_iterations
+
+        if self.policy_type == 'mpc':
+            if self.optimization_iterations is None:
+                raise ValueError('optimization_iterations must be specified when policy_type="mpc".')
+
+            if (isinstance(self.optimization_iterations, bool)
+            or not isinstance(self.optimization_iterations, int)
+            or self.optimization_iterations < 1):
+                raise ValueError('optimization_iterations must be a positive integer, 'f'got {self.optimization_iterations!r}.')
+
+            if (isinstance(self.planning_steps, bool)
+            or not isinstance(self.planning_steps, int)
+            or self.planning_steps < 1):
+                raise ValueError('planning_steps must be a positive integer, 'f'got {self.planning_steps!r}.')
         self.lr = learning_rate
+        self.arch = arch
         self.seed = seed
         self.seeds = seeds
         self.eval_seed = eval_seed
@@ -421,22 +441,22 @@ class ExperimentManager:
             source=self.template_rollout,
         )
 
-    def _build_trainer(self, *, policy, iterations: int):
+    def _build_trainer(self, *, policy, iterations: int, horizon: Optional[int] = None,):
+        trainer_horizon = self.horizon if horizon is None else horizon
         additive_noise = self._build_additive_noise(iterations)
         if self.noise["type"] != "gradient2noise":
             return Train(
-                horizon=self.horizon,
+                horizon=trainer_horizon,
+                batch_size=trainer_horizon,
                 model=self.env.model,
                 action_space=self.env.action_space,
                 policy=policy,
                 logic=self.logic,
                 lr=self.lr,
                 hidden_sizes=self.arch,
-                batch_size=self.horizon,
                 seed=self.seed,
                 additive_noise=additive_noise,
             )
-
         analysis_additive_noise = AdditiveNoiseFactory.create(
             noise_type='constant',
             std=0.0,
@@ -483,9 +503,29 @@ class ExperimentManager:
             return TO(
                 action_template=self.template_rollout.noop_actions,
                 horizon=self.horizon,)
+
+        if self.policy_type == 'mpc':
+            planner = TO(
+            action_template=self.template_rollout.noop_actions,
+            horizon=self.planning_steps,)
+
+            trainer = self._build_trainer(
+            policy=planner,
+            iterations=self.optimization_iterations,
+            horizon=self.planning_steps,)
+
+            return MPC(
+            planner=planner,
+            trainer=trainer,
+            planning_steps=self.planning_steps,
+            optimization_iterations=self.optimization_iterations,
+            additive_noise=trainer.default_additive_noise,)
+
         raise RuntimeError(f'Unsupported policy_type={self.policy_type!r}.')
 
     def _run_single_experiment(self, iterations: int=100, log_frequency: int=10) -> None:
+        if self.policy_type == 'mpc':
+            return self._run_single_mpc_experiment()
         policy = self._build_policy()
         trainer = self._build_trainer(policy=policy, iterations=iterations)
         eval_returns = []
@@ -548,3 +588,32 @@ class ExperimentManager:
             sigma_matrix = np.asarray([row for (_, row) in sigma_rows], dtype=np.float64)
 
         return all_train_iterations[1:], all_train_returns, eval_iterations, eval_returns, policy, sigma_matrix
+
+    def _run_single_mpc_experiment(self):
+    
+            policy = self._build_policy()
+            self.eval_seeder.reset()
+            result = policy.evaluate(
+            self.env,
+            episodes=self.eval_seeds,
+            seed_generator=self.eval_seeder,)
+            print(
+            '[INFO] MPC evaluation, steps={:3d}, '
+            'discounted return={:.2f}, std={:.2f}'.format(
+                self.horizon,
+                result['mean'],
+                result['std'],
+                )
+            )
+    
+            iterations_axis = [0]
+            returns = [float(result['mean'])]
+    
+            return (
+            iterations_axis,
+            returns,
+            iterations_axis,
+            returns,
+            policy,
+            None,
+            )

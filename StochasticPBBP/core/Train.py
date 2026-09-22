@@ -353,3 +353,42 @@ class Train:
             additive_noise=additive_noise,
         )
     
+    def optimize_from_state(
+        self,
+        *,
+        initial_state: Dict[str, Any],
+        iterations: int,
+        planning_steps: int,
+        additive_noise: Optional[AdditiveNoise] = None,
+        ) -> Tuple[List[Dict[str, float]], nn.Module]:
+
+        effective_additive_noise = (self.default_additive_noise
+        if additive_noise is None
+        else self._resolve_additive_noise(additive_noise))
+
+        initial_subs, _, model_params = self.rollout.reset(
+        initial_state=initial_state,)
+
+        history: List[Dict[str, float]] = []
+
+        self.policy.train()
+        
+        for iteration in range(1, iterations + 1):
+
+            self.optimizer.zero_grad(set_to_none=True)
+
+            result = self._run_training_batch(
+            initial_subs=initial_subs,
+            model_params=model_params,
+            policy_state=None,
+            batch_steps=planning_steps,
+            start_step=0,
+            iteration=iteration,
+            additive_noise=effective_additive_noise,)
+
+            history.append({
+            'iteration': float(iteration),
+            'return': float(result['objective'].detach()),
+            'loss': float(result['loss'].detach()),})
+
+        return history, self.policy
