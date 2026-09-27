@@ -8,10 +8,11 @@ from torch import nn
 
 from StochasticPBBP.core.Logic import ExactLogic, FuzzyLogic
 from StochasticPBBP.core.Rollout import TorchRollout
-from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
+from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory, NoAdditiveNoise
 from StochasticPBBP.utils.Policies import StationaryMarkov
 
 UpdateActionCallback = Callable[[int, Sequence[Dict[str, Any]]], None]
+PostUpdateActionCallback = Callable[[int, Sequence[Dict[str, Any]]], None]
 
 # from .Logic import FuzzyLogic
 # from .Policies import GaussianPolicy
@@ -234,6 +235,29 @@ class Train:
             'trace': trace,
         }
 
+    def _run_post_update_analysis(self, *, iteration: int):
+        """Run the updated policy for a full horizon without exploration noise.
+
+        The rollout RNG state is restored afterwards so enabling action-table
+        observation does not change the random samples used by later training
+        rollouts.
+        """
+        rollout_key_state = self.rollout.cell.key.get_state().clone()
+        was_training = self.policy.training
+        self.policy.eval()
+        try:
+            with torch.no_grad():
+                return self.rollout(
+                    policy=self.policy,
+                    steps=int(self.rollout.horizon),
+                    start_step=0,
+                    iteration=iteration,
+                    additive_noise=NoAdditiveNoise(),
+                )
+        finally:
+            self.rollout.cell.key.set_state(rollout_key_state)
+            self.policy.train(was_training)
+
     def train_trajectory(self,
                          iterations: int=10,
                          print_every: int=1,
@@ -242,6 +266,7 @@ class Train:
                          batch: Optional[bool]=None,
                          additive_noise: Optional[AdditiveNoise]=None,
                          update_action_callback: Optional[UpdateActionCallback]=None,
+                         post_update_action_callback: Optional[PostUpdateActionCallback]=None,
                          ) -> Tuple[List[Dict[str, float]], nn.Module]:
         """Train the policy with sampled horizon batches.
 
@@ -258,6 +283,9 @@ class Train:
             update_action_callback: Optional observer called once per outer
                 iteration with the existing noisy update trace actions. This
                 requires one full-horizon optimizer batch per iteration.
+            post_update_action_callback: Optional observer called once per
+                outer iteration with a fresh full-horizon rollout from the
+                updated policy and zero exploration noise.
         """
         del batch
         history: List[Dict[str, float]] = []
@@ -360,6 +388,15 @@ class Train:
                     )
                 update_action_callback(iteration, iteration_trace.actions)
 
+            if post_update_action_callback is not None:
+                post_update_trace = self._run_post_update_analysis(
+                    iteration=iteration,
+                )
+                post_update_action_callback(
+                    iteration,
+                    post_update_trace.actions,
+                )
+
         return history, self.policy
 
     def train_batch(self,
@@ -369,6 +406,7 @@ class Train:
                     batch_num: int=1,
                     additive_noise: Optional[AdditiveNoise]=None,
                     update_action_callback: Optional[UpdateActionCallback]=None,
+                    post_update_action_callback: Optional[PostUpdateActionCallback]=None,
                     ) -> Tuple[List[Dict[str, float]], nn.Module]:
         return self.train_trajectory(
             iterations=iterations,
@@ -377,5 +415,6 @@ class Train:
             batch_num=batch_num,
             additive_noise=additive_noise,
             update_action_callback=update_action_callback,
+            post_update_action_callback=post_update_action_callback,
         )
     

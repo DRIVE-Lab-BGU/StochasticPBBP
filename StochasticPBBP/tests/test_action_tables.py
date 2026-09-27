@@ -179,6 +179,129 @@ class ConstantUpdateActionCallbackTest(unittest.TestCase):
         self.assertEqual(len(history), 1)
         self.assertIs(received[0], noisy_update_actions)
 
+    def test_post_update_callback_receives_fresh_zero_noise_analysis_actions(self) -> None:
+        events: List[str] = []
+
+        class ScalarPolicy(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.action = torch.nn.Parameter(torch.tensor([1.0]))
+
+        class FakeRollout:
+            def __init__(self) -> None:
+                self.horizon = 2
+                self.cell = SimpleNamespace(
+                    key=torch.Generator().manual_seed(123)
+                )
+
+            def __call__(
+                self,
+                *,
+                policy,
+                steps: int,
+                start_step: int,
+                iteration: int,
+                additive_noise,
+            ):
+                self.assert_call_arguments(
+                    policy=policy,
+                    steps=steps,
+                    start_step=start_step,
+                    iteration=iteration,
+                )
+                events.append('post_update_analysis')
+                # Consume rollout randomness to verify that the helper restores it.
+                torch.rand((), generator=self.cell.key)
+                zero_action = {'release': torch.zeros_like(policy.action)}
+                noised_zero = additive_noise(zero_action)
+                self.assert_zero_noise(noised_zero)
+                return SimpleNamespace(
+                    actions=[
+                        {'release': policy.action.clone()}
+                        for _ in range(steps)
+                    ]
+                )
+
+            @staticmethod
+            def assert_call_arguments(
+                *,
+                policy,
+                steps: int,
+                start_step: int,
+                iteration: int,
+            ) -> None:
+                if policy.training:
+                    raise AssertionError('Post-update policy must be in eval mode.')
+                if (steps, start_step, iteration) != (2, 0, 1):
+                    raise AssertionError('Unexpected post-update rollout arguments.')
+
+            @staticmethod
+            def assert_zero_noise(actions: Dict[str, Any]) -> None:
+                if not torch.equal(actions['release'], torch.zeros(1)):
+                    raise AssertionError('Post-update rollout must use zero noise.')
+
+        trainer = object.__new__(Train)
+        trainer.default_batch_size = 2
+        trainer.default_batch_num = 1
+        trainer.default_additive_noise = object()
+        trainer.rollout = FakeRollout()
+        trainer.policy = ScalarPolicy()
+
+        trainer.optimizer = SimpleNamespace(
+            zero_grad=lambda **_: events.append('zero_grad')
+        )
+        noisy_update_actions = [
+            {'release': torch.tensor([99.0, 99.0])},
+            {'release': torch.tensor([98.0, 98.0])},
+        ]
+        def run_training_batch(**_: Any) -> Dict[str, Any]:
+            events.append('update')
+            # Simulate the in-place parameter change made by optimizer.step().
+            with torch.no_grad():
+                trainer.policy.action.fill_(4.25)
+            return {
+                'objective': torch.tensor(1.0),
+                'loss': torch.tensor(-1.0),
+                'trace': SimpleNamespace(
+                    actions=noisy_update_actions,
+                    rewards=[torch.tensor(0.5), torch.tensor(0.5)],
+                    final_subs={},
+                ),
+            }
+
+        trainer._run_training_batch = run_training_batch
+        received: List[Sequence[Dict[str, Any]]] = []
+        rollout_key_state = trainer.rollout.cell.key.get_state().clone()
+
+        def callback(iteration: int, actions: Sequence[Dict[str, Any]]) -> None:
+            self.assertEqual(iteration, 1)
+            events.append('callback')
+            received.append(actions)
+
+        history, _ = trainer.train_trajectory(
+            iterations=1,
+            print_every=0,
+            post_update_action_callback=callback,
+        )
+
+        self.assertEqual(
+            events,
+            ['zero_grad', 'update', 'post_update_analysis', 'callback'],
+        )
+        self.assertEqual(len(history), 1)
+        self.assertEqual(len(received[0]), 2)
+        self.assertTrue(
+            all(
+                torch.equal(actions['release'], torch.tensor([4.25]))
+                for actions in received[0]
+            )
+        )
+        self.assertIsNot(received[0], noisy_update_actions)
+        self.assertTrue(trainer.policy.training)
+        self.assertTrue(
+            torch.equal(trainer.rollout.cell.key.get_state(), rollout_key_state)
+        )
+
     def test_callback_requires_one_full_horizon_update(self) -> None:
         trainer = object.__new__(Train)
         trainer.default_batch_size = 2
@@ -267,7 +390,7 @@ class ExperimentManagerActionTableTest(unittest.TestCase):
         self.assertEqual(json.loads(rows[2][1]), {'release': [2, 1.0]})
         self.assertIsNone(json.loads(rows[1][3]))
 
-    def test_routes_constant_update_actions_and_uses_constant_filename(self) -> None:
+    def test_routes_constant_post_update_actions_and_uses_constant_filename(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             manager = object.__new__(ExperimentManager)
             manager.horizon = 2
@@ -294,14 +417,14 @@ class ExperimentManagerActionTableTest(unittest.TestCase):
                 iterations: int,
                 print_every: int,
                 batch_size: int,
-                update_action_callback,
+                post_update_action_callback,
             ):
                 nonlocal trainer_call_count
                 del print_every, batch_size
                 history = []
                 for local_iteration in range(1, iterations + 1):
                     trainer_call_count += 1
-                    update_action_callback(
+                    post_update_action_callback(
                         local_iteration,
                         [
                             {'release': torch.tensor([trainer_call_count, 3.0])},
@@ -326,7 +449,7 @@ class ExperimentManagerActionTableTest(unittest.TestCase):
             self.assertEqual(
                 action_table_path.name,
                 'actions_table_reservoir_instance1_policyseed112_h2_i2_'
-                'constant_std3.0_noisy-update.csv',
+                'constant_std3.0_post-update-zero-noise.csv',
             )
             with action_table_path.open(newline='', encoding='utf-8') as handle:
                 rows = list(csv.reader(handle))

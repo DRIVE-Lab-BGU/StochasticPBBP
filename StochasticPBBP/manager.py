@@ -239,7 +239,7 @@ class ExperimentManager:
         else:
             filename = (
                 f'{filename_prefix}_{noise_type_token}_std{std_token}'
-                '_noisy-update.csv'
+                '_post-update-zero-noise.csv'
             )
         return Path(self.output_folder) / 'actions_table' / filename
 
@@ -715,7 +715,7 @@ class ExperimentManager:
                             iterations=to_run,
                             print_every=0,
                             batch_size=self.horizon,  # why again?
-                            update_action_callback=write_actions,
+                            post_update_action_callback=write_actions,
                         )
                     else:
                         raise RuntimeError(

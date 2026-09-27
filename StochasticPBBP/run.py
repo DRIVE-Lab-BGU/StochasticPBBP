@@ -41,7 +41,7 @@ parser.add_argument(
     action="store_true",
     help=(
         "save one action matrix per policy seed "
-        "(post-update analysis for gradient2noise; noisy update actions for constant)"
+        "(post-update zero-noise actions for gradient2noise and constant)"
     ),
     default=True,
 )
