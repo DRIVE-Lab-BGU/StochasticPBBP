@@ -38,12 +38,19 @@ parser.add_argument("--noisestdend", type=float, default=0.0, help="final std of
 parser.add_argument("--alpha", type=float, default=1.0, help="alpha parameter for noise")
 parser.add_argument(
     "--save-actions-table",
+    dest="save_actions_table",
     action="store_true",
     help=(
         "save one action matrix per policy seed "
         "(post-update zero-noise actions for gradient2noise and constant)"
     ),
     default=True,
+)
+parser.add_argument(
+    "--no-save-actions-table",
+    dest="save_actions_table",
+    action="store_false",
+    help="disable action-table CSV output",
 )
 parser.add_argument(
     "-e",
