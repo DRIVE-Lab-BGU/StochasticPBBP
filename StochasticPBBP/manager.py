@@ -116,7 +116,8 @@ class ExperimentManager:
                  exact_eval_mode=False,
                  output_folder=None,
                  policy_type: str='neural',
-                 save_actions_table: bool=False,
+                 save_clean_actions_table: bool=False,
+                 save_noisy_actions_table: bool=False,
                  domain_name: Optional[str]=None,
                  instance_number: Optional[int]=None) -> None:
         self.env = pyRDDLGym.make(domain=domain, instance=instance, vectorized=True)
@@ -144,7 +145,8 @@ class ExperimentManager:
         self.last_sigma_artifacts: Optional[Dict[str, Any]] = None
         self.action_table_paths: List[str] = []
         self.current_policy_seed: Optional[int] = None
-        self.save_actions_table = bool(save_actions_table)
+        self.save_clean_actions_table = bool(save_clean_actions_table)
+        self.save_noisy_actions_table = bool(save_noisy_actions_table)
         self.domain_name = (
             str(domain_name)
             if domain_name is not None else
@@ -170,7 +172,8 @@ class ExperimentManager:
         self.noise.setdefault("final", float(self.noise["value"]))
         self.noise.setdefault("alpha", 0.1)
         self._validate_action_table_configuration(
-            save_actions_table=self.save_actions_table,
+            save_clean_actions_table=self.save_clean_actions_table,
+            save_noisy_actions_table=self.save_noisy_actions_table,
             noise_type=str(self.noise['type']),
             output_folder=self.output_folder,
         )
@@ -194,21 +197,22 @@ class ExperimentManager:
     @staticmethod
     def _validate_action_table_configuration(
         *,
-        save_actions_table: bool,
+        save_clean_actions_table: bool,
+        save_noisy_actions_table: bool,
         noise_type: str,
         output_folder: Optional[Path | str],
     ) -> None:
-        if not save_actions_table:
+        if not save_clean_actions_table and not save_noisy_actions_table:
             return
         normalized_noise_type = noise_type.strip().lower()
         if normalized_noise_type not in {'gradient2noise', 'constant'}:
             raise ValueError(
-                '--save-actions-table supports --noisetype gradient2noise '
+                'Action-table saving supports --noisetype gradient2noise '
                 f'or constant, got {noise_type!r}.'
             )
         if output_folder is None:
             raise ValueError(
-                'output_folder must be provided when save_actions_table is enabled.'
+                'output_folder must be provided when action-table saving is enabled.'
             )
 
     @staticmethod
@@ -216,9 +220,20 @@ class ExperimentManager:
         token = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(value).strip())
         return token.strip('._-') or 'unknown'
 
-    def _action_table_path(self, *, policy_seed: int, iterations: int) -> Path:
+    def _action_table_path(
+        self,
+        *,
+        policy_seed: int,
+        iterations: int,
+        table_kind: str,
+    ) -> Path:
         if self.output_folder is None:
             raise ValueError('output_folder is required to save an action table.')
+        normalized_table_kind = table_kind.strip().lower()
+        if normalized_table_kind not in {'clean', 'noisy'}:
+            raise ValueError(
+                f'table_kind must be "clean" or "noisy", got {table_kind!r}.'
+            )
 
         domain_token = self._filename_token(self.domain_name)
         instance_token = self._filename_token(self.instance_number)
@@ -230,16 +245,21 @@ class ExperimentManager:
             f'actions_table_{domain_token}_instance{instance_token}'
             f'_policyseed{int(policy_seed)}_h{self.horizon}_i{int(iterations)}'
         )
+        table_suffix = (
+            'post-update-zero-noise'
+            if normalized_table_kind == 'clean' else
+            'training-noisy-action'
+        )
         if noise_type_token == 'gradient2noise':
             alpha_token = self._filename_token(float(self.noise['alpha']))
             filename = (
                 f'{filename_prefix}_gradient2noise_std{std_token}'
-                f'_alpha{alpha_token}.csv'
+                f'_alpha{alpha_token}_{table_suffix}.csv'
             )
         else:
             filename = (
                 f'{filename_prefix}_{noise_type_token}_std{std_token}'
-                '_post-update-zero-noise.csv'
+                f'_{table_suffix}.csv'
             )
         return Path(self.output_folder) / 'actions_table' / filename
 
@@ -661,46 +681,84 @@ class ExperimentManager:
 
         all_train_iterations.append(0)
 
-        action_table_writer: Optional[ActionTableCSVWriter] = None
-        if self.save_actions_table:
+        clean_action_table_writer: Optional[ActionTableCSVWriter] = None
+        noisy_action_table_writer: Optional[ActionTableCSVWriter] = None
+        if self.save_clean_actions_table or self.save_noisy_actions_table:
             if self.current_policy_seed is None:
                 raise RuntimeError('Policy seed was not recorded while building the policy.')
-            action_table_path = self._action_table_path(
-                policy_seed=self.current_policy_seed,
-                iterations=iterations,
-            )
-            action_table_writer = ActionTableCSVWriter(
-                action_table_path,
-                horizon=self.horizon,
-            )
-            self.action_table_paths.append(str(action_table_path))
-            print(
-                '[INFO] Streaming iteration action trajectories to '
-                f'{action_table_path}'
-            )
+            if self.save_clean_actions_table:
+                clean_action_table_path = self._action_table_path(
+                    policy_seed=self.current_policy_seed,
+                    iterations=iterations,
+                    table_kind='clean',
+                )
+                clean_action_table_writer = ActionTableCSVWriter(
+                    clean_action_table_path,
+                    horizon=self.horizon,
+                )
+                self.action_table_paths.append(str(clean_action_table_path))
+                print(
+                    '[INFO] Streaming clean action trajectories to '
+                    f'{clean_action_table_path}'
+                )
+            if self.save_noisy_actions_table:
+                noisy_action_table_path = self._action_table_path(
+                    policy_seed=self.current_policy_seed,
+                    iterations=iterations,
+                    table_kind='noisy',
+                )
+                noisy_action_table_writer = ActionTableCSVWriter(
+                    noisy_action_table_path,
+                    horizon=self.horizon,
+                )
+                self.action_table_paths.append(str(noisy_action_table_path))
+                print(
+                    '[INFO] Streaming noisy training action trajectories to '
+                    f'{noisy_action_table_path}'
+                )
 
         # execute training with evaluation on pyrddlgym
         try:
             for i in range(chunks):
                 to_run = min(to_go, log_frequency)
                 iteration_offset = all_train_iterations[-1]
-                if action_table_writer is None:
+                if (
+                    clean_action_table_writer is None and
+                    noisy_action_table_writer is None
+                ):
                     history, trained_policy = trainer.train_trajectory(
                         iterations=to_run,
                         print_every=0,
                         batch_size=self.horizon,  # why again?
                     )
                 else:
-                    def write_actions(
-                        local_iteration: int,
-                        actions: Sequence[Mapping[str, Any]],
-                        *,
-                        _iteration_offset: int=iteration_offset,
-                    ) -> None:
-                        action_table_writer.write_iteration(
-                            _iteration_offset + local_iteration,
-                            actions,
-                        )
+                    write_clean_actions = None
+                    if clean_action_table_writer is not None:
+                        def write_clean_actions(
+                            local_iteration: int,
+                            actions: Sequence[Mapping[str, Any]],
+                            *,
+                            _iteration_offset: int=iteration_offset,
+                            _writer: ActionTableCSVWriter=clean_action_table_writer,
+                        ) -> None:
+                            _writer.write_iteration(
+                                _iteration_offset + local_iteration,
+                                actions,
+                            )
+
+                    write_noisy_actions = None
+                    if noisy_action_table_writer is not None:
+                        def write_noisy_actions(
+                            local_iteration: int,
+                            actions: Sequence[Mapping[str, Any]],
+                            *,
+                            _iteration_offset: int=iteration_offset,
+                            _writer: ActionTableCSVWriter=noisy_action_table_writer,
+                        ) -> None:
+                            _writer.write_iteration(
+                                _iteration_offset + local_iteration,
+                                actions,
+                            )
 
                     normalized_noise_type = str(self.noise['type']).strip().lower()
                     if normalized_noise_type == 'gradient2noise':
@@ -708,14 +766,16 @@ class ExperimentManager:
                             iterations=to_run,
                             print_every=0,
                             batch_size=self.horizon,  # why again?
-                            analysis_action_callback=write_actions,
+                            update_action_callback=write_noisy_actions,
+                            analysis_action_callback=write_clean_actions,
                         )
                     elif normalized_noise_type == 'constant':
                         history, trained_policy = trainer.train_trajectory(
                             iterations=to_run,
                             print_every=0,
                             batch_size=self.horizon,  # why again?
-                            post_update_action_callback=write_actions,
+                            update_action_callback=write_noisy_actions,
+                            post_update_action_callback=write_clean_actions,
                         )
                     else:
                         raise RuntimeError(
@@ -747,8 +807,10 @@ class ExperimentManager:
                 all_train_returns.extend(train_returns)
                 all_train_iterations.extend(list(map(lambda x: x + iteration_offset, train_iterations)))
         finally:
-            if action_table_writer is not None:
-                action_table_writer.close()
+            if clean_action_table_writer is not None:
+                clean_action_table_writer.close()
+            if noisy_action_table_writer is not None:
+                noisy_action_table_writer.close()
         sigma_matrix = None
         if sigma_rows:
             sigma_rows.sort(key=lambda row: row[0])

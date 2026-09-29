@@ -11,6 +11,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from StochasticPBBP.manager import ExperimentManager
 
+
+def parse_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise argparse.ArgumentTypeError(
+        f"expected true or false, got {value!r}"
+    )
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--instance", type=int, default=1, help="instance number")
 parser.add_argument("--domain", type=str, default='reservoir', help="domain name")
@@ -37,20 +49,22 @@ parser.add_argument("--noisestd", type=float, default=3.5, help="initial std of 
 parser.add_argument("--noisestdend", type=float, default=0.0, help="final std of noise")
 parser.add_argument("--alpha", type=float, default=1.0, help="alpha parameter for noise")
 parser.add_argument(
-    "--save-actions-table",
-    dest="save_actions_table",
-    action="store_true",
+    "--save-clean-actions-table",
+    type=parse_bool,
     help=(
-        "save one action matrix per policy seed "
-        "(post-update zero-noise actions for gradient2noise and constant)"
+        "save post-update zero-noise action tables; "
+        "expected value: true or false"
     ),
     default=True,
 )
 parser.add_argument(
-    "--no-save-actions-table",
-    dest="save_actions_table",
-    action="store_false",
-    help="disable action-table CSV output",
+    "--save-noisy-actions-table",
+    type=parse_bool,
+    help=(
+        "save the exact noisy actions used by the training update; "
+        "expected value: true or false"
+    ),
+    default=False,
 )
 parser.add_argument(
     "-e",
@@ -85,7 +99,8 @@ def main(args) -> None:
         output_folder=output_dir,
         arch=tuple(args.arch),
         policy_type=args.policy,
-        save_actions_table=args.save_actions_table,
+        save_clean_actions_table=args.save_clean_actions_table,
+        save_noisy_actions_table=args.save_noisy_actions_table,
         domain_name=args.domain,
         instance_number=args.instance,
     )

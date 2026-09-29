@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import torch
 from torch import nn
 
-from StochasticPBBP.core.Train import Train
+from StochasticPBBP.core.Train import Train, UpdateActionCallback
 from StochasticPBBP.utils.Noise import AdditiveNoise, AdditiveNoiseFactory
 
 
@@ -229,6 +229,7 @@ class R2Trainer(Train):
         iteration: int,
         additive_noise: Optional[AdditiveNoise]=None,
         analysis_additive_noise: Optional[AdditiveNoise]=None,
+        update_action_callback: Optional[UpdateActionCallback]=None,
         analysis_action_callback: Optional[AnalysisActionCallback]=None,
     ) -> Dict[str, Any]:
         effective_additive_noise = self.default_additive_noise if additive_noise is None else (
@@ -251,6 +252,12 @@ class R2Trainer(Train):
             iteration=iteration,
             additive_noise=effective_additive_noise,
         )
+
+        if update_action_callback is not None:
+            update_action_callback(
+                iteration,
+                update_result['trace'].actions,
+            )
 
         
         # take the trained policy and check it on a eollout withot noise.
@@ -288,6 +295,7 @@ class R2Trainer(Train):
                          batch: Optional[bool]=None,
                          additive_noise: Optional[AdditiveNoise]=None,
                          analysis_additive_noise: Optional[AdditiveNoise]=None,
+                         update_action_callback: Optional[UpdateActionCallback]=None,
                          analysis_action_callback: Optional[AnalysisActionCallback]=None,
                          ) -> Tuple[List[Dict[str, Any]], nn.Module]:
         del batch # delete the batch from the scopeto avoid warning unused agument
@@ -308,6 +316,7 @@ class R2Trainer(Train):
                 iteration=iteration,
                 additive_noise=additive_noise,
                 analysis_additive_noise=analysis_additive_noise,
+                update_action_callback=update_action_callback,
                 analysis_action_callback=analysis_action_callback,
             )
             update_result = result['update']
@@ -351,6 +360,7 @@ class R2Trainer(Train):
                     batch_num: int=1,
                     additive_noise: Optional[AdditiveNoise]=None,
                     analysis_additive_noise: Optional[AdditiveNoise]=None,
+                    update_action_callback: Optional[UpdateActionCallback]=None,
                     analysis_action_callback: Optional[AnalysisActionCallback]=None,
                     ) -> Tuple[List[Dict[str, float]], nn.Module]:
         return self.train_trajectory(
@@ -360,5 +370,6 @@ class R2Trainer(Train):
             batch_num=batch_num,
             additive_noise=additive_noise,
             analysis_additive_noise=analysis_additive_noise,
+            update_action_callback=update_action_callback,
             analysis_action_callback=analysis_action_callback,
         )
